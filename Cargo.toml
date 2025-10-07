@@ -1,0 +1,7 @@
+[package]
+name = "elgato4k-linux"
+version = "0.1.0"
+edition = "2025"
+
+[dependencies]
+rusb = "0.9"
