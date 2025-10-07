@@ -218,7 +218,7 @@ The tool briefly detaches the kernel driver to send commands, which may cause a 
 Contributions welcome! Areas for improvement:
 - Support for other USB Elgato devices
 - GUI wrapper
-- Additional feature reverse engineering like for the 4K S
+- Additional feature reverse engineering (like for the 4K S)
 
 Since i gave away my 4K S testing and feature adding will be limited. If you have a 4K S and can test, please open an issue with your results! 
 
