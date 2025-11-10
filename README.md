@@ -46,7 +46,7 @@ sudo pacman -S libusb
 
 ```bash
 # Clone the repository
-git clone https://github.com/yourusername/elgato4k-linux.git
+git clone https://github.com/13bm/elgato4k-linux.git
 cd elgato4k-linux
 
 # Build release binary
