@@ -1,0 +1,41 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install dependencies
+        run: sudo apt-get update && sudo apt-get install -y libusb-1.0-0-dev
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Build release
+        run: cargo build --release
+
+      - name: Strip binary
+        run: strip target/release/elgato4k-linux
+
+      - name: Create tarball
+        run: |
+          mkdir -p release
+          cp target/release/elgato4k-linux release/
+          cp README.md release/
+          cp LOW_CONFIDENCE_COMMANDS.md release/
+          tar -czf elgato4k-linux-${{ github.ref_name }}-x86_64-linux.tar.gz -C release .
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: elgato4k-linux-${{ github.ref_name }}-x86_64-linux.tar.gz
+          generate_release_notes: false
