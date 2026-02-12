@@ -31,7 +31,7 @@ jobs:
           mkdir -p release
           cp target/release/elgato4k-linux release/
           cp README.md release/
-          cp LOW_CONFIDENCE_COMMANDS.md release/
+          cp docs/LOW_CONFIDENCE_COMMANDS.md release/
           tar -czf elgato4k-linux-${{ github.ref_name }}-x86_64-linux.tar.gz -C release .
 
       - name: Create GitHub Release
