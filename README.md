@@ -319,6 +319,7 @@ The tool briefly detaches the kernel driver to send commands, which may cause a 
 
 - [@RadioFreeKerbin](https://github.com/RadioFreeKerbin) — Discovered the 4K X PID changes across USB speed modes
 - [@AndySchroder](https://github.com/AndySchroder) — Pointed out the need for clearer EDID option documentation
+- [@Tatsh2DX](https://www.reddit.com/u/Tatsh2DX) — Identified the sendATCommand(0x8e) call for USB speed switching in the macOS binary.
 - [konovalov-nk](https://www.reddit.com/u/konovalov-nk) — for their comedic journey of suffering enabling 10Gbps
 - [birdayz](https://reddit.com/u/birdayz) (Johannes Brüderl) — Submitted the [`USB_QUIRK_NO_BOS` kernel patch](https://lore.kernel.org/linux-usb/20251207090220.14807-1-johannes.bruederl@gmail.com/) for 10Gbps mode support
 
@@ -331,6 +332,10 @@ Contributions welcome! Areas for improvement:
 - Additional feature reverse engineering
 
 Since I gave away my 4K S, testing and feature adding will be limited. If you have a 4K S and can test, please open an issue with your results!
+
+## License
+
+This project is licensed under the [GNU General Public License v3.0](LICENSE).
 
 ## Disclaimer
 

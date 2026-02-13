@@ -20,18 +20,21 @@ jobs:
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
 
+      - name: Run clippy
+        run: cargo clippy -- -D warnings
+
+      - name: Run tests
+        run: cargo test
+
       - name: Build release
         run: cargo build --release
-
-      - name: Strip binary
-        run: strip target/release/elgato4k-linux
 
       - name: Create tarball
         run: |
           mkdir -p release
           cp target/release/elgato4k-linux release/
           cp README.md release/
-          cp LOW_CONFIDENCE_COMMANDS.md release/
+          cp docs/LOW_CONFIDENCE_COMMANDS.md release/
           tar -czf elgato4k-linux-${{ github.ref_name }}-x86_64-linux.tar.gz -C release .
 
       - name: Create GitHub Release
