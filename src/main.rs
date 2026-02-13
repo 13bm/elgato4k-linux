@@ -64,7 +64,7 @@ fn check_for_update() {
     #[cfg(feature = "update-check")]
     {
         let current = env!("CARGO_PKG_VERSION");
-        let url = "https://api.github.com/repos/bmarr/elgato4k-linux/releases/latest";
+        let url = "https://api.github.com/repos/13bm/elgato4k-linux/releases/latest";
 
         let agent: ureq::Agent = ureq::Agent::config_builder()
             .timeout_global(Some(std::time::Duration::from_secs(3)))
@@ -81,7 +81,7 @@ fn check_for_update() {
             .filter(|v| is_newer(v, current))
         {
             println!("\nUpdate available: v{} -> v{}", current, latest);
-            println!("   https://github.com/bmarr/elgato4k-linux/releases/latest");
+            println!("   https://github.com/13bm/elgato4k-linux/releases/latest");
         }
     }
 }
