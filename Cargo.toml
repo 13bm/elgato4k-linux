@@ -1,8 +1,23 @@
 [package]
 name = "elgato4k-linux"
-version = "0.2.0"
+version = "0.2.1"
 edition = "2024"
+description = "USB control tool and library for Elgato 4K X (UVC) and 4K S (HID) capture cards on Linux"
+license = "GPL-3.0"
+repository = "https://github.com/bmarr/elgato4k-linux"
+keywords = ["elgato", "capture-card", "usb", "uvc", "hid"]
+categories = ["hardware-support", "command-line-utilities"]
 
 [dependencies]
-
 rusb = "0.9"
+thiserror = "2.0.18"
+ureq = { version = "3", optional = true }
+
+[profile.release]
+strip = true
+lto = true
+codegen-units = 1
+
+[features]
+default = ["update-check"]
+update-check = ["dep:ureq"]

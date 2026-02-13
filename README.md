@@ -333,6 +333,10 @@ Contributions welcome! Areas for improvement:
 
 Since I gave away my 4K S, testing and feature adding will be limited. If you have a 4K S and can test, please open an issue with your results!
 
+## License
+
+This project is licensed under the [GNU General Public License v3.0](LICENSE).
+
 ## Disclaimer
 
 This project is not affiliated with, endorsed by, or supported by Elgato Systems GmbH or Corsair Gaming, Inc. All product names, logos, and brands are property of their respective owners.
