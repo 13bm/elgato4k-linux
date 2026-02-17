@@ -15,6 +15,48 @@ use crate::error::ElgatoError;
 use crate::protocol::*;
 use crate::settings::DeviceModel;
 
+// ---------------------------------------------------------------------------
+// AT command framing (pure functions, testable without hardware)
+// ---------------------------------------------------------------------------
+
+/// Compute the LRC (Longitudinal Redundancy Check) for a byte slice.
+///
+/// LRC = two's complement of the sum of all bytes (mod 256).
+fn lrc(data: &[u8]) -> u8 {
+    let sum: u8 = data.iter().fold(0u8, |acc, &b| acc.wrapping_add(b));
+    0u8.wrapping_sub(sum)
+}
+
+/// Build a framed AT command payload for the Realtek UVC protocol.
+///
+/// Returns `[0xa1, length_indicator, 0x00, 0x00, cmd_id(4B LE), input..., LRC]`.
+pub(crate) fn frame_at_command(cmd_id: u32, input: &[u8]) -> Vec<u8> {
+    // Combined data: [cmd_id as u32 LE] + [input_data]
+    let mut data = cmd_id.to_le_bytes().to_vec();
+    data.extend_from_slice(input);
+
+    // Frame: [0xa1, length_indicator, 0x00, 0x00, data..., LRC]
+    let length_indicator = ((data.len() + 2) & 0x7f) as u8;
+    let mut payload = vec![0xa1, length_indicator, 0x00, 0x00];
+    payload.extend_from_slice(&data);
+    payload.push(lrc(&payload));
+    payload
+}
+
+/// Build a family 0x06 AT read probe: `[a1, 06, 00, 00, sub_cmd, 00, 00, 00, LRC]`.
+pub(crate) fn frame_at_read_probe(sub_cmd: u8) -> Vec<u8> {
+    let mut payload = vec![0xa1, 0x06, 0x00, 0x00, sub_cmd, 0x00, 0x00, 0x00];
+    payload.push(lrc(&payload));
+    payload
+}
+
+/// Build a family 0x07 AT read probe: `[a1, 07, 00, 00, sub_cmd, 00, 00, 00, param, LRC]`.
+pub(crate) fn frame_at_read_probe_family07(sub_cmd: u8, param: u8) -> Vec<u8> {
+    let mut payload = vec![0xa1, 0x07, 0x00, 0x00, sub_cmd, 0x00, 0x00, 0x00, param];
+    payload.push(lrc(&payload));
+    payload
+}
+
 /// UVC Extension Unit protocol methods for the 4K X.
 ///
 /// Uses XU #4 with GUID `961073c7-49f7-44f2-ab42-e940405940c2`.
@@ -163,7 +205,7 @@ impl ElgatoDevice {
         self.set_uvc_setting(probe)?;
         // Poll sel 2 status — matches Windows behavior and gives the device
         // time to process the command before we query GET_LEN on sel 1
-        let _ = self.poll_uvc_status();
+        self.poll_uvc_status()?;
         self.read_uvc_setting()
     }
 
@@ -194,18 +236,7 @@ impl ElgatoDevice {
             });
         }
 
-        // Combined data: [cmd_id as u32 LE] + [input_data]
-        let mut data = cmd_id.to_le_bytes().to_vec();
-        data.extend_from_slice(input);
-
-        // Frame: [0xa1, length_indicator, 0x00, 0x00, data..., LRC]
-        let length_indicator = ((data.len() + 2) & 0x7f) as u8;
-        let mut payload = vec![0xa1, length_indicator, 0x00, 0x00];
-        payload.extend_from_slice(&data);
-        let sum: u8 = payload.iter().fold(0u8, |acc, &b| acc.wrapping_add(b));
-        payload.push(0u8.wrapping_sub(sum));
-
-        // Write + poll + read (same as probe_uvc_setting)
+        let payload = frame_at_command(cmd_id, input);
         self.probe_uvc_setting(&payload)
     }
 
@@ -222,12 +253,7 @@ impl ElgatoDevice {
             });
         }
 
-        // Build a1 06 family probe: [a1, 06, 00, 00, sub_cmd, 00, 00, 00, checksum]
-        let mut payload = vec![0xa1, 0x06, 0x00, 0x00, sub_cmd, 0x00, 0x00, 0x00];
-        let sum: u8 = payload.iter().fold(0u8, |acc, &b| acc.wrapping_add(b));
-        payload.push(0u8.wrapping_sub(sum));
-
-        self.probe_uvc_setting(&payload)
+        self.probe_uvc_setting(&frame_at_read_probe(sub_cmd))
     }
 
     /// Read an AT command response via `a1 07` family probe (4K X only).
@@ -242,11 +268,96 @@ impl ElgatoDevice {
             });
         }
 
-        // Build a1 07 family probe: [a1, 07, 00, 00, sub_cmd, 00, 00, 00, param, checksum]
-        let mut payload = vec![0xa1, 0x07, 0x00, 0x00, sub_cmd, 0x00, 0x00, 0x00, param];
-        let sum: u8 = payload.iter().fold(0u8, |acc, &b| acc.wrapping_add(b));
-        payload.push(0u8.wrapping_sub(sum));
+        self.probe_uvc_setting(&frame_at_read_probe_family07(sub_cmd, param))
+    }
+}
 
-        self.probe_uvc_setting(&payload)
+// ---------------------------------------------------------------------------
+// Tests
+// ---------------------------------------------------------------------------
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn lrc_checksum() {
+        // LRC = two's complement of byte sum (mod 256)
+        assert_eq!(lrc(&[0xa1, 0x06, 0x00, 0x00, 0x77, 0x00, 0x00, 0x00]), 0xe2);
+    }
+
+    #[test]
+    fn frame_at_read_probe_firmware() {
+        // Firmware version read: AT cmd 0x77 via a1 06 family
+        let payload = frame_at_read_probe(0x77);
+        assert_eq!(payload, vec![0xa1, 0x06, 0x00, 0x00, 0x77, 0x00, 0x00, 0x00, 0xe2]);
+        // Verify LRC: sum of all bytes should be 0 (mod 256)
+        let total: u8 = payload.iter().fold(0u8, |acc, &b| acc.wrapping_add(b));
+        assert_eq!(total, 0);
+    }
+
+    #[test]
+    fn frame_at_read_probe_hdr() {
+        // HDR read: AT cmd 0x90
+        let payload = frame_at_read_probe(0x90);
+        assert_eq!(payload.len(), 9);
+        assert_eq!(payload[0], 0xa1);
+        assert_eq!(payload[1], 0x06);
+        assert_eq!(payload[4], 0x90);
+        let total: u8 = payload.iter().fold(0u8, |acc, &b| acc.wrapping_add(b));
+        assert_eq!(total, 0);
+    }
+
+    #[test]
+    fn frame_at_read_probe_family07_color_range() {
+        // EDID range policy read: AT cmd 0x91, family 0x07, param 0x01
+        let payload = frame_at_read_probe_family07(0x91, 0x01);
+        assert_eq!(payload.len(), 10);
+        assert_eq!(payload[0], 0xa1);
+        assert_eq!(payload[1], 0x07);
+        assert_eq!(payload[4], 0x91);
+        assert_eq!(payload[8], 0x01);
+        let total: u8 = payload.iter().fold(0u8, |acc, &b| acc.wrapping_add(b));
+        assert_eq!(total, 0);
+    }
+
+    #[test]
+    fn frame_at_command_usb_speed_10g() {
+        // USB speed 10Gbps: AT cmd 0x8e, input [01 00 00 00 03 00 00 00]
+        let input = [0x01, 0x00, 0x00, 0x00, 0x03, 0x00, 0x00, 0x00];
+        let payload = frame_at_command(0x8e, &input);
+        // Expected: a1 0e 00 00 | 8e 00 00 00 | 01 00 00 00 03 00 00 00 | LRC
+        assert_eq!(payload.len(), 17);
+        assert_eq!(payload[0], 0xa1); // family byte
+        assert_eq!(payload[1], 0x0e); // length_indicator: (12+2) & 0x7f = 14 = 0x0e
+        assert_eq!(payload[4], 0x8e); // cmd_id byte 0
+        assert_eq!(payload[8], 0x01); // constant from input
+        assert_eq!(payload[12], 0x03); // speed value
+        let total: u8 = payload.iter().fold(0u8, |acc, &b| acc.wrapping_add(b));
+        assert_eq!(total, 0);
+    }
+
+    #[test]
+    fn frame_at_command_usb_speed_5g() {
+        // USB speed 5Gbps: AT cmd 0x8e, input [01 00 00 00 00 00 00 00]
+        let input = [0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00];
+        let payload = frame_at_command(0x8e, &input);
+        assert_eq!(payload.len(), 17);
+        assert_eq!(payload[1], 0x0e);
+        assert_eq!(payload[12], 0x00); // speed value = 5Gbps
+        let total: u8 = payload.iter().fold(0u8, |acc, &b| acc.wrapping_add(b));
+        assert_eq!(total, 0);
+    }
+
+    #[test]
+    fn frame_at_command_empty_input() {
+        // AT command with no extra input (just cmd_id)
+        let payload = frame_at_command(0x67, &[]);
+        // Expected: a1 06 00 00 | 67 00 00 00 | LRC
+        assert_eq!(payload.len(), 9);
+        assert_eq!(payload[1], 0x06); // length_indicator: (4+2) & 0x7f = 6
+        assert_eq!(payload[4], 0x67);
+        let total: u8 = payload.iter().fold(0u8, |acc, &b| acc.wrapping_add(b));
+        assert_eq!(total, 0);
     }
 }

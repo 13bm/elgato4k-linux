@@ -3,7 +3,40 @@
 //! A command-line utility for changing settings on the Elgato 4K X (UVC) and
 //! 4K S (HID) capture cards.  Run `elgato4k --help` for usage information.
 
+use std::fmt;
+
 use elgato4k_linux::*;
+
+/// Delay between consecutive setting changes to give the device time to process.
+const SETTING_APPLY_DELAY: std::time::Duration = std::time::Duration::from_millis(100);
+
+/// CLI-specific errors for argument parsing.
+#[derive(Debug)]
+enum CliError {
+    /// Invalid CLI argument value.
+    InvalidArgument {
+        arg: &'static str,
+        value: String,
+        valid: &'static str,
+    },
+    /// A required CLI argument value is missing.
+    MissingArgumentValue(String),
+}
+
+impl fmt::Display for CliError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::InvalidArgument { arg, value, valid } => {
+                write!(f, "Invalid value '{}' for {}.\nValid values: {}", value, arg, valid)
+            }
+            Self::MissingArgumentValue(arg) => {
+                write!(f, "{} requires a value", arg)
+            }
+        }
+    }
+}
+
+impl std::error::Error for CliError {}
 
 fn print_usage() {
     println!("Elgato 4K X/S Controller - USB Control Tool\n");
@@ -135,14 +168,14 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         let arg = &args[i];
 
         if i + 1 >= args.len() {
-            return Err(ElgatoError::MissingArgumentValue(arg.clone()).into());
+            return Err(CliError::MissingArgumentValue(arg.clone()).into());
         }
 
         let value = &args[i + 1];
 
         match arg.as_str() {
             "--hdmi-range" => {
-                let range: EdidRangePolicy = value.parse().map_err(|_| ElgatoError::InvalidArgument {
+                let range: EdidRangePolicy = value.parse().map_err(|_| CliError::InvalidArgument {
                     arg: "--hdmi-range",
                     value: value.clone(),
                     valid: EdidRangePolicy::VALID_VALUES,
@@ -152,7 +185,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                 settings_applied = true;
             }
             "--edid-source" => {
-                let source: EdidSource = value.parse().map_err(|_| ElgatoError::InvalidArgument {
+                let source: EdidSource = value.parse().map_err(|_| CliError::InvalidArgument {
                     arg: "--edid-source",
                     value: value.clone(),
                     valid: EdidSource::VALID_VALUES,
@@ -162,7 +195,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                 settings_applied = true;
             }
             "--hdr-map" => {
-                let mode: HdrToneMapping = value.parse().map_err(|_| ElgatoError::InvalidArgument {
+                let mode: HdrToneMapping = value.parse().map_err(|_| CliError::InvalidArgument {
                     arg: "--hdr-map",
                     value: value.clone(),
                     valid: HdrToneMapping::VALID_VALUES,
@@ -172,7 +205,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                 settings_applied = true;
             }
             "--custom-edid" => {
-                let mode: CustomEdidMode = value.parse().map_err(|_| ElgatoError::InvalidArgument {
+                let mode: CustomEdidMode = value.parse().map_err(|_| CliError::InvalidArgument {
                     arg: "--custom-edid",
                     value: value.clone(),
                     valid: CustomEdidMode::VALID_VALUES,
@@ -182,7 +215,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                 settings_applied = true;
             }
             "--audio-input" => {
-                let input: AudioInput = value.parse().map_err(|_| ElgatoError::InvalidArgument {
+                let input: AudioInput = value.parse().map_err(|_| CliError::InvalidArgument {
                     arg: "--audio-input",
                     value: value.clone(),
                     valid: AudioInput::VALID_VALUES,
@@ -192,7 +225,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                 settings_applied = true;
             }
             "--video-scaler" => {
-                let scaler: VideoScaler = value.parse().map_err(|_| ElgatoError::InvalidArgument {
+                let scaler: VideoScaler = value.parse().map_err(|_| CliError::InvalidArgument {
                     arg: "--video-scaler",
                     value: value.clone(),
                     valid: VideoScaler::VALID_VALUES,
@@ -202,7 +235,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                 settings_applied = true;
             }
             "--usb-speed" => {
-                let speed: UsbSpeed = value.parse().map_err(|_| ElgatoError::InvalidArgument {
+                let speed: UsbSpeed = value.parse().map_err(|_| CliError::InvalidArgument {
                     arg: "--usb-speed",
                     value: value.clone(),
                     valid: UsbSpeed::VALID_VALUES,
@@ -220,7 +253,10 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         }
 
         i += 2;
-        std::thread::sleep(SETTING_APPLY_DELAY);
+        // Delay between consecutive settings, but not after the last one
+        if i < args.len() {
+            std::thread::sleep(SETTING_APPLY_DELAY);
+        }
     }
 
     if settings_applied {

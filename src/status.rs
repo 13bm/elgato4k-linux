@@ -139,6 +139,15 @@ impl fmt::Display for DeviceStatus {
 }
 
 // ---------------------------------------------------------------------------
+// BCD validation
+// ---------------------------------------------------------------------------
+
+/// Check that a byte is valid BCD (each nibble is 0–9).
+fn is_valid_bcd(b: u8) -> bool {
+    (b & 0x0f) <= 9 && (b >> 4) <= 9
+}
+
+// ---------------------------------------------------------------------------
 // HID decode functions (4K S)
 // ---------------------------------------------------------------------------
 
@@ -215,29 +224,19 @@ impl ElgatoDevice {
     pub fn read_firmware_version(&self) -> Result<String, ElgatoError> {
         match self.model {
             DeviceModel::Elgato4KX => {
-                match self.read_at_command(UVC_SUBCMD_FIRMWARE_VERSION) {
-                    Ok(data) if data.len() >= 10 => {
-                        Ok(Self::format_firmware_version_4kx(&data))
-                    }
-                    Ok(data) => {
-                        Ok(format!("Unexpected response ({} bytes): {:02x?}", data.len(), data))
-                    }
-                    Err(e) => {
-                        Ok(format!("Failed to read: {}", e))
-                    }
+                let data = self.read_at_command(UVC_SUBCMD_FIRMWARE_VERSION)?;
+                if data.len() >= 10 {
+                    Ok(Self::format_firmware_version_4kx(&data))
+                } else {
+                    Ok(format!("Unexpected response ({} bytes): {:02x?}", data.len(), data))
                 }
             }
             DeviceModel::Elgato4KS => {
-                match self.read_hid_data(HID_READ_CMD, SUBCMD_FIRMWARE_VERSION, 8) {
-                    Ok(data) if data.len() >= 5 => {
-                        Ok(Self::format_firmware_version_4ks(&data))
-                    }
-                    Ok(data) => {
-                        Ok(format!("Unexpected response ({} bytes): {:02x?}", data.len(), data))
-                    }
-                    Err(e) => {
-                        Ok(format!("Failed to read: {}", e))
-                    }
+                let data = self.read_hid_data(HID_READ_CMD, SUBCMD_FIRMWARE_VERSION, 8)?;
+                if data.len() >= 5 {
+                    Ok(Self::format_firmware_version_4ks(&data))
+                } else {
+                    Ok(format!("Unexpected response ({} bytes): {:02x?}", data.len(), data))
                 }
             }
         }
@@ -287,7 +286,10 @@ impl ElgatoDevice {
             return "Unknown (no version reported)".to_string();
         }
 
-        if (1..=BCD_MAX_MONTH).contains(&mm) && (1..=BCD_MAX_DAY).contains(&dd) {
+        if is_valid_bcd(yy) && is_valid_bcd(mm) && is_valid_bcd(dd)
+            && (1..=BCD_MAX_MONTH).contains(&mm)
+            && (1..=BCD_MAX_DAY).contains(&dd)
+        {
             format!("{:02x}.{:02x}.{:02x}", yy, mm, dd)
         } else {
             format!("Raw: {:02x?}", &data[..std::cmp::min(8, data.len())])
@@ -297,10 +299,15 @@ impl ElgatoDevice {
     // --- Internal: generic typed readers ---
 
     /// Read a single HID status field and decode it via the provided function.
-    fn read_hid_typed<T>(&self, sub_cmd: u8, decode: fn(u8) -> ReadValue<T>) -> Option<ReadValue<T>> {
-        match self.read_hid_data(HID_READ_CMD, sub_cmd, 1) {
-            Ok(data) if !data.is_empty() => Some(decode(data[0])),
-            _ => None,
+    ///
+    /// Returns `Ok(Some(...))` on success, `Ok(None)` if the device returned
+    /// an empty response, or `Err(...)` on USB transport failure.
+    fn read_hid_typed<T>(&self, sub_cmd: u8, decode: fn(u8) -> ReadValue<T>) -> Result<Option<ReadValue<T>>, ElgatoError> {
+        let data = self.read_hid_data(HID_READ_CMD, sub_cmd, 1)?;
+        if data.is_empty() {
+            Ok(None)
+        } else {
+            Ok(Some(decode(data[0])))
         }
     }
 
@@ -313,12 +320,12 @@ impl ElgatoDevice {
         Ok(DeviceStatus {
             firmware_version,
             usb_speed: None,
-            hdr_tone_mapping: self.read_hid_typed(SUBCMD_HDR_TONEMAPPING, decode_hdr),
-            hdmi_color_range: self.read_hid_typed(SUBCMD_COLOR_RANGE, decode_color_range),
-            edid_source: self.read_hid_typed(SUBCMD_EDID_MODE, decode_edid_mode),
+            hdr_tone_mapping: self.read_hid_typed(SUBCMD_HDR_TONEMAPPING, decode_hdr)?,
+            hdmi_color_range: self.read_hid_typed(SUBCMD_COLOR_RANGE, decode_color_range)?,
+            edid_source: self.read_hid_typed(SUBCMD_EDID_MODE, decode_edid_mode)?,
             custom_edid: None,
-            audio_input: self.read_hid_typed(SUBCMD_AUDIO_INPUT, decode_audio_input),
-            video_scaler: self.read_hid_typed(SUBCMD_VIDEO_SCALER, decode_video_scaler),
+            audio_input: self.read_hid_typed(SUBCMD_AUDIO_INPUT, decode_audio_input)?,
+            video_scaler: self.read_hid_typed(SUBCMD_VIDEO_SCALER, decode_video_scaler)?,
         })
     }
 
@@ -458,9 +465,10 @@ mod tests {
 
     #[test]
     fn firmware_version_4ks_valid() {
-        let data = [0x00, 0x00, 0x00, 0x25, 0x0C, 0x03, 0x00, 0x00];
+        // BCD: year 0x25, month 0x12 (December), day 0x03
+        let data = [0x00, 0x00, 0x00, 0x25, 0x12, 0x03, 0x00, 0x00];
         let result = ElgatoDevice::format_firmware_version_4ks(&data);
-        assert_eq!(result, "25.0c.03");
+        assert_eq!(result, "25.12.03");
     }
 
     #[test]
@@ -475,6 +483,29 @@ mod tests {
         let data = [0x00, 0x00, 0x00, 0x25, 0x15, 0x03, 0x00, 0x00];
         let result = ElgatoDevice::format_firmware_version_4ks(&data);
         assert!(result.starts_with("Raw:"));
+    }
+
+    #[test]
+    fn firmware_version_4ks_invalid_bcd_nibble() {
+        // 0x0A has nibble A which is not valid BCD (digits must be 0-9)
+        let data = [0x00, 0x00, 0x00, 0x25, 0x0A, 0x03, 0x00, 0x00];
+        let result = ElgatoDevice::format_firmware_version_4ks(&data);
+        assert!(result.starts_with("Raw:"));
+    }
+
+    // --- BCD validation tests ---
+
+    #[test]
+    fn bcd_validation() {
+        assert!(is_valid_bcd(0x00));
+        assert!(is_valid_bcd(0x09));
+        assert!(is_valid_bcd(0x10));
+        assert!(is_valid_bcd(0x99));
+        assert!(is_valid_bcd(0x12)); // December
+        assert!(is_valid_bcd(0x31)); // 31st
+        assert!(!is_valid_bcd(0x0A)); // low nibble A
+        assert!(!is_valid_bcd(0xA0)); // high nibble A
+        assert!(!is_valid_bcd(0xFF));
     }
 
     // --- ReadValue Display tests ---

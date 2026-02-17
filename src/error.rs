@@ -37,15 +37,4 @@ pub enum ElgatoError {
         model: &'static str,
     },
 
-    /// Invalid CLI argument value.
-    #[error("Invalid value '{value}' for {arg}.\nValid values: {valid}")]
-    InvalidArgument {
-        arg: &'static str,
-        value: String,
-        valid: &'static str,
-    },
-
-    /// A required CLI argument value is missing.
-    #[error("{0} requires a value")]
-    MissingArgumentValue(String),
 }

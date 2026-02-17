@@ -32,4 +32,3 @@ pub use settings::{
     EdidSource, HdrToneMapping, UsbSpeed, VideoScaler,
 };
 pub use status::{CustomEdidStatus, DeviceStatus, ReadValue, UsbSpeedStatus};
-pub use protocol::SETTING_APPLY_DELAY;

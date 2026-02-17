@@ -136,5 +136,3 @@ pub const BCD_MAX_DAY: u8 = 0x31;
 pub const USB_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(1);
 /// Delay after HID read request before GET_REPORT.
 pub const HID_READ_DELAY: std::time::Duration = std::time::Duration::from_millis(10);
-/// Delay between consecutive setting changes.
-pub const SETTING_APPLY_DELAY: std::time::Duration = std::time::Duration::from_millis(100);

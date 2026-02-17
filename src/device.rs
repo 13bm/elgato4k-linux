@@ -16,7 +16,6 @@ struct FoundDevice {
     device: Device<Context>,
     model: DeviceModel,
     pid: u16,
-    speed_desc: &'static str,
 }
 
 /// Handle to an opened Elgato capture card.
@@ -35,7 +34,6 @@ impl ElgatoDevice {
         let handle = found.device.open()?;
         let model = found.model;
         let pid = found.pid;
-        let speed_desc = found.speed_desc;
 
         let interface_num = match model {
             DeviceModel::Elgato4KX => UVC_INTERFACE,
@@ -46,12 +44,9 @@ impl ElgatoDevice {
 
         if kernel_driver_was_active {
             handle.detach_kernel_driver(interface_num as u8)?;
-            eprintln!("Temporarily detached kernel driver from interface {}", interface_num);
         }
 
         handle.claim_interface(interface_num as u8)?;
-        eprintln!("Claimed interface {}", interface_num);
-        eprintln!("Device: {} (0fd9:{:04x} - {})\n", model, pid, speed_desc);
 
         Ok(Self { handle, model, pid })
     }
@@ -172,15 +167,15 @@ impl ElgatoDevice {
 
             let pid = desc.product_id();
 
-            for &(known_pid, speed_desc) in PIDS_4KX {
+            for &(known_pid, _) in PIDS_4KX {
                 if pid == known_pid {
-                    return Ok(FoundDevice { device, model: DeviceModel::Elgato4KX, pid, speed_desc });
+                    return Ok(FoundDevice { device, model: DeviceModel::Elgato4KX, pid });
                 }
             }
 
-            for &(known_pid, speed_desc) in PIDS_4KS {
+            for &(known_pid, _) in PIDS_4KS {
                 if pid == known_pid {
-                    return Ok(FoundDevice { device, model: DeviceModel::Elgato4KS, pid, speed_desc });
+                    return Ok(FoundDevice { device, model: DeviceModel::Elgato4KS, pid });
                 }
             }
         }
@@ -196,9 +191,7 @@ impl Drop for ElgatoDevice {
             DeviceModel::Elgato4KS => HID_INTERFACE,
         };
 
-        if let Err(e) = self.handle.release_interface(interface_num as u8) {
-            eprintln!("Warning: Failed to release interface: {}", e);
-        }
+        let _ = self.handle.release_interface(interface_num as u8);
 
         // Best-effort reattach — will fail on platforms without kernel drivers
         let _ = self.handle.attach_kernel_driver(interface_num as u8);
