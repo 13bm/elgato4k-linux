@@ -71,8 +71,10 @@ pub const SUBCMD_HDR_TONEMAPPING: u8 = 0x0a;
 pub const SUBCMD_COLOR_RANGE: u8 = 0x0b;
 /// EDID mode — `GetEDIDMode` / `SetEDIDMode`, 1 byte.
 pub const SUBCMD_EDID_MODE: u8 = 0x12;
-/// Commit/apply — write 0x13 0x01 as second packet to apply changes.
-pub const SUBCMD_COMMIT: u8 = 0x13;
+// NOTE: Sub-command 0x13 was previously used as a "commit" packet, but
+// firmware analysis of the 4K S MCU (FW_4K_S_MCU.bin) proved it triggers
+// an infinite loop → watchdog reset. Settings apply immediately with a
+// single packet — no commit step is needed.
 /// Video scaler — `GetVideoScalerEnabled` / `SetVideoScalerEnabled`, 1 byte.
 pub const SUBCMD_VIDEO_SCALER: u8 = 0x19;
 
@@ -132,8 +134,6 @@ pub const BCD_MAX_DAY: u8 = 0x31;
 
 /// Default USB control transfer timeout.
 pub const USB_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(1);
-/// Inter-packet delay for two-packet HID writes.
-pub const HID_INTER_PACKET_DELAY: std::time::Duration = std::time::Duration::from_millis(1);
 /// Delay after HID read request before GET_REPORT.
 pub const HID_READ_DELAY: std::time::Duration = std::time::Duration::from_millis(10);
 /// Delay between consecutive setting changes.

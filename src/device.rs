@@ -78,10 +78,7 @@ impl ElgatoDevice {
     pub fn set_hdmi_range(&self, range: EdidRangePolicy) -> Result<(), ElgatoError> {
         match self.model {
             DeviceModel::Elgato4KX => self.set_uvc_setting(range.payload_4kx()),
-            DeviceModel::Elgato4KS => {
-                let (ref pkt1, ref pkt2) = range.payload_4ks();
-                self.send_hid_two_packet(pkt1, pkt2)
-            }
+            DeviceModel::Elgato4KS => self.send_hid_packet(&range.payload_4ks()),
         }
     }
 
@@ -91,10 +88,7 @@ impl ElgatoDevice {
     pub fn set_edid_source(&self, source: EdidSource) -> Result<(), ElgatoError> {
         match self.model {
             DeviceModel::Elgato4KX => self.set_uvc_setting(source.payload_4kx()),
-            DeviceModel::Elgato4KS => {
-                let pkt = source.payload_4ks();
-                self.send_hid_packet(&pkt)
-            }
+            DeviceModel::Elgato4KS => self.send_hid_packet(&source.payload_4ks()),
         }
     }
 
@@ -104,10 +98,7 @@ impl ElgatoDevice {
     pub fn set_hdr_mapping(&self, mode: HdrToneMapping) -> Result<(), ElgatoError> {
         match self.model {
             DeviceModel::Elgato4KX => self.set_uvc_setting(mode.payload_4kx()),
-            DeviceModel::Elgato4KS => {
-                let (ref pkt1, ref pkt2) = mode.payload_4ks();
-                self.send_hid_two_packet(pkt1, pkt2)
-            }
+            DeviceModel::Elgato4KS => self.send_hid_packet(&mode.payload_4ks()),
         }
     }
 
@@ -134,8 +125,7 @@ impl ElgatoDevice {
                 model: "4K X",
             });
         }
-        let (ref pkt1, ref pkt2) = input.payload_4ks();
-        self.send_hid_two_packet(pkt1, pkt2)
+        self.send_hid_packet(&input.payload_4ks())
     }
 
     /// Set the video scaler on or off.
@@ -148,8 +138,7 @@ impl ElgatoDevice {
                 model: "4K X",
             });
         }
-        let (ref pkt1, ref pkt2) = scaler.payload_4ks();
-        self.send_hid_two_packet(pkt1, pkt2)
+        self.send_hid_packet(&scaler.payload_4ks())
     }
 
     /// Set the USB speed mode.

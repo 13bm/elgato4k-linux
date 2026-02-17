@@ -1,8 +1,9 @@
 //! HID SET_REPORT / GET_REPORT transport for the 4K S.
 //!
 //! All communication with the 4K S uses 255-byte zero-padded HID reports on
-//! Interface 7.  Write operations use SET_REPORT (Output), read operations
-//! send a SET_REPORT request followed by GET_REPORT (Input).
+//! Interface 7.  Write operations use a single SET_REPORT (Output) packet —
+//! settings apply immediately with no "commit" step.  Read operations send a
+//! SET_REPORT request followed by GET_REPORT (Input).
 
 use crate::device::ElgatoDevice;
 use crate::error::ElgatoError;
@@ -32,18 +33,6 @@ impl ElgatoDevice {
             USB_TIMEOUT,
         ).map_err(|e| ElgatoError::HidTransfer(format!("SET_REPORT failed: {}", e)))?;
 
-        Ok(())
-    }
-
-    /// Send a two-packet HID sequence with a short inter-packet delay.
-    pub(crate) fn send_hid_two_packet(
-        &self,
-        pkt1: &[u8; HID_PACKET_SIZE],
-        pkt2: &[u8; HID_PACKET_SIZE],
-    ) -> Result<(), ElgatoError> {
-        self.send_hid_packet(pkt1)?;
-        std::thread::sleep(HID_INTER_PACKET_DELAY);
-        self.send_hid_packet(pkt2)?;
         Ok(())
     }
 

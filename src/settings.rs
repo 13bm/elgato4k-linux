@@ -1,8 +1,8 @@
 //! Device setting enums and payload generation.
 //!
-//! Each setting type maps to one or more device payloads:
+//! Each setting type maps to a device payload:
 //! - **4K X (UVC):** Fixed `a1`-prefixed byte sequences sent via SET_CUR.
-//! - **4K S (HID):** Two-packet write sequences using the `06 06 06 55 02` header.
+//! - **4K S (HID):** Single 255-byte packets using the `06 06 06 55 02` header.
 //!
 //! All enums implement [`std::fmt::Display`] for user-facing output and
 //! [`std::str::FromStr`] for CLI parsing.
@@ -40,12 +40,6 @@ fn hid_write_packet(sub_cmd: u8, value: u8) -> [u8; HID_PACKET_SIZE] {
     pkt[HID_WRITE_HEADER.len()] = sub_cmd;
     pkt[HID_WRITE_HEADER.len() + 1] = value;
     pkt
-}
-
-/// Build the standard "commit" packet: `[06 06 06 55 02 13 01]` padded to
-/// [`HID_PACKET_SIZE`]. Sent as the second packet after a setting change.
-fn hid_commit_packet() -> [u8; HID_PACKET_SIZE] {
-    hid_write_packet(SUBCMD_COMMIT, 0x01)
 }
 
 // ---------------------------------------------------------------------------
@@ -100,13 +94,13 @@ impl EdidRangePolicy {
         }
     }
 
-    pub fn payload_4ks(&self) -> ([u8; HID_PACKET_SIZE], [u8; HID_PACKET_SIZE]) {
+    pub fn payload_4ks(&self) -> [u8; HID_PACKET_SIZE] {
         let value = match self {
             Self::Auto   => 0x00,
             Self::Expand => 0x01,
             Self::Shrink => 0x02,
         };
-        (hid_write_packet(SUBCMD_COLOR_RANGE, value), hid_commit_packet())
+        hid_write_packet(SUBCMD_COLOR_RANGE, value)
     }
 }
 
@@ -159,14 +153,14 @@ impl EdidSource {
     }
 
     /// EDID source uses a single HID packet (no commit needed).
-    /// Sub-command 0x12 for Merged/Display, 0x13 for Internal.
+    /// All modes use sub-command 0x12 with values 0x00/0x01/0x02.
     pub fn payload_4ks(&self) -> [u8; HID_PACKET_SIZE] {
-        let (sub_cmd, value) = match self {
-            Self::Merged   => (SUBCMD_EDID_MODE, 0x00),
-            Self::Display  => (SUBCMD_EDID_MODE, 0x01),
-            Self::Internal => (SUBCMD_COMMIT, 0x01),
+        let value = match self {
+            Self::Merged   => 0x00,
+            Self::Display  => 0x01,
+            Self::Internal => 0x02,
         };
-        hid_write_packet(sub_cmd, value)
+        hid_write_packet(SUBCMD_EDID_MODE, value)
     }
 }
 
@@ -211,12 +205,12 @@ impl HdrToneMapping {
         }
     }
 
-    pub fn payload_4ks(&self) -> ([u8; HID_PACKET_SIZE], [u8; HID_PACKET_SIZE]) {
+    pub fn payload_4ks(&self) -> [u8; HID_PACKET_SIZE] {
         let value = match self {
             Self::On  => 0x01,
             Self::Off => 0x00,
         };
-        (hid_write_packet(SUBCMD_HDR_TONEMAPPING, value), hid_commit_packet())
+        hid_write_packet(SUBCMD_HDR_TONEMAPPING, value)
     }
 }
 
@@ -301,12 +295,12 @@ impl FromStr for AudioInput {
 impl AudioInput {
     pub const VALID_VALUES: &str = "embedded, analog";
 
-    pub fn payload_4ks(&self) -> ([u8; HID_PACKET_SIZE], [u8; HID_PACKET_SIZE]) {
+    pub fn payload_4ks(&self) -> [u8; HID_PACKET_SIZE] {
         let value = match self {
             Self::Embedded => 0x00,
             Self::Analog   => 0x01,
         };
-        (hid_write_packet(SUBCMD_AUDIO_INPUT, value), hid_commit_packet())
+        hid_write_packet(SUBCMD_AUDIO_INPUT, value)
     }
 }
 
@@ -347,12 +341,12 @@ impl FromStr for VideoScaler {
 impl VideoScaler {
     pub const VALID_VALUES: &str = "on, off";
 
-    pub fn payload_4ks(&self) -> ([u8; HID_PACKET_SIZE], [u8; HID_PACKET_SIZE]) {
+    pub fn payload_4ks(&self) -> [u8; HID_PACKET_SIZE] {
         let value = match self {
             Self::On  => 0x01,
             Self::Off => 0x00,
         };
-        (hid_write_packet(SUBCMD_VIDEO_SCALER, value), hid_commit_packet())
+        hid_write_packet(SUBCMD_VIDEO_SCALER, value)
     }
 }
 
@@ -479,34 +473,45 @@ mod tests {
 
     #[test]
     fn hid_packets_are_correct_size() {
-        let (pkt1, pkt2) = EdidRangePolicy::Expand.payload_4ks();
-        assert_eq!(pkt1.len(), HID_PACKET_SIZE);
-        assert_eq!(pkt2.len(), HID_PACKET_SIZE);
-
-        let pkt = EdidSource::Display.payload_4ks();
-        assert_eq!(pkt.len(), HID_PACKET_SIZE);
-
-        let (pkt1, pkt2) = AudioInput::Analog.payload_4ks();
-        assert_eq!(pkt1.len(), HID_PACKET_SIZE);
-        assert_eq!(pkt2.len(), HID_PACKET_SIZE);
+        assert_eq!(EdidRangePolicy::Expand.payload_4ks().len(), HID_PACKET_SIZE);
+        assert_eq!(EdidSource::Display.payload_4ks().len(), HID_PACKET_SIZE);
+        assert_eq!(AudioInput::Analog.payload_4ks().len(), HID_PACKET_SIZE);
+        assert_eq!(HdrToneMapping::On.payload_4ks().len(), HID_PACKET_SIZE);
+        assert_eq!(VideoScaler::Off.payload_4ks().len(), HID_PACKET_SIZE);
     }
 
     #[test]
     fn hid_packets_have_correct_header() {
-        let (pkt1, _) = HdrToneMapping::On.payload_4ks();
-        assert_eq!(&pkt1[..5], &HID_WRITE_HEADER);
-        assert_eq!(pkt1[5], SUBCMD_HDR_TONEMAPPING);
-        assert_eq!(pkt1[6], 0x01); // On = 0x01
+        let pkt = HdrToneMapping::On.payload_4ks();
+        assert_eq!(&pkt[..5], &HID_WRITE_HEADER);
+        assert_eq!(pkt[5], SUBCMD_HDR_TONEMAPPING);
+        assert_eq!(pkt[6], 0x01); // On = 0x01
     }
 
     #[test]
-    fn commit_packet_is_correct() {
-        let (_, commit) = VideoScaler::On.payload_4ks();
-        assert_eq!(&commit[..5], &HID_WRITE_HEADER);
-        assert_eq!(commit[5], SUBCMD_COMMIT);
-        assert_eq!(commit[6], 0x01);
-        // Rest should be zeroes
-        assert!(commit[7..].iter().all(|&b| b == 0));
+    fn hid_packets_correct_subcmds() {
+        let pkt = EdidRangePolicy::Expand.payload_4ks();
+        assert_eq!(pkt[5], SUBCMD_COLOR_RANGE);
+        assert_eq!(pkt[6], 0x01);
+
+        let pkt = EdidSource::Internal.payload_4ks();
+        assert_eq!(pkt[5], SUBCMD_EDID_MODE);
+        assert_eq!(pkt[6], 0x02);
+
+        let pkt = AudioInput::Analog.payload_4ks();
+        assert_eq!(pkt[5], SUBCMD_AUDIO_INPUT);
+        assert_eq!(pkt[6], 0x01);
+
+        let pkt = VideoScaler::On.payload_4ks();
+        assert_eq!(pkt[5], SUBCMD_VIDEO_SCALER);
+        assert_eq!(pkt[6], 0x01);
+    }
+
+    #[test]
+    fn hid_packets_zero_padded() {
+        let pkt = VideoScaler::On.payload_4ks();
+        // Bytes after the header + sub_cmd + value should all be zero
+        assert!(pkt[7..].iter().all(|&b| b == 0));
     }
 
     #[test]
