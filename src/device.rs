@@ -167,7 +167,8 @@ impl ElgatoDevice {
                 model: "4K S",
             });
         }
-        self.send_at_command(AT_CMD_SET_USB_SPEED, &speed.at_input())
+        let _ack = self.send_at_command(AT_CMD_SET_USB_SPEED, &speed.at_input())?;
+        Ok(())
     }
 
     fn find_device(context: &Context) -> Result<FoundDevice, ElgatoError> {

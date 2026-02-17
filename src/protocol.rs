@@ -88,6 +88,9 @@ pub const UVC_REQUEST_TYPE_IN: u8 = 0xA1;
 pub const UVC_SET_CUR: u8 = 0x01;
 /// GET_CUR bRequest.
 pub const UVC_GET_CUR: u8 = 0x81;
+/// GET_LEN bRequest — queries the current descriptor length for a selector.
+/// The device dynamically changes this after a SET_CUR to reflect the response size.
+pub const UVC_GET_LEN: u8 = 0x85;
 /// UVC interface number for Extension Unit #4.
 pub const UVC_INTERFACE: u16 = 0;
 /// Extension Unit entity ID (XU #4, GUID 961073c7-49f7-44f2-ab42-e940405940c2).
@@ -98,27 +101,20 @@ pub const UVC_SELECTOR_TRIGGER: u16 = 0x02;
 pub const UVC_SELECTOR_VALUE: u16 = 0x01;
 
 // ---------------------------------------------------------------------------
-// UVC payload identifiers (byte[1] in a1-prefixed payloads)
+// UVC sub-command IDs (byte[4] in a1 06 family payloads)
 // ---------------------------------------------------------------------------
 
-/// UVC payload family: HDMI color range (a1 06, 9 bytes).
-pub const UVC_FAMILY_COLOR_RANGE: u8 = 0x06;
-/// UVC payload family: HDR tone mapping (a1 07, 10 bytes).
-pub const UVC_FAMILY_HDR: u8 = 0x07;
-/// UVC payload family: EDID range policy (a1 08, 11 bytes).
-pub const UVC_FAMILY_EDID_RANGE: u8 = 0x08;
-/// UVC payload family: EDID source / custom EDID (a1 0a, 13 bytes).
-pub const UVC_FAMILY_EDID_SOURCE: u8 = 0x0a;
-
-// ---------------------------------------------------------------------------
-// AT command IDs (4K X) — sent via UVC XU framing
-// ---------------------------------------------------------------------------
-
-/// Read firmware version (AT_Get_Customer_Ver).
-pub const AT_CMD_GET_VERSION: u32 = 0x77;
-/// Read USB speed mode.
-pub const AT_CMD_GET_USB_SPEED: u32 = 0x8d;
-/// Set USB speed mode.
+/// Sub-command: read firmware version (AT_Get_Customer_Ver).
+pub const UVC_SUBCMD_FIRMWARE_VERSION: u8 = 0x77;
+/// Sub-command: read EDID Range Policy / HDMI color range (family 0x07, 10-byte probe).
+/// Response byte[4] mirrors the `0x7c` write byte[9]: 0x00=Auto, 0x03=Expand, 0x04=Shrink.
+pub const UVC_SUBCMD_EDID_RANGE_READ: u8 = 0x91;
+/// Sub-command: read HDR tone mapping state (family 0x06).
+/// Response byte[4]: 0x01=On, 0x00=Off.
+pub const UVC_SUBCMD_HDR_READ: u8 = 0x90;
+/// AT command ID for setting USB speed (4K X only, used with send_at_command).
+/// From RTICE_SDK_X64: `rtk_sendATCommand(0x8e, &local_418, local_218, 8)`.
+/// Payload: `[01 00 00 00, speed_value 00 00 00]` where speed=0x00 (5G) or 0x03 (10G).
 pub const AT_CMD_SET_USB_SPEED: u32 = 0x8e;
 
 // ---------------------------------------------------------------------------

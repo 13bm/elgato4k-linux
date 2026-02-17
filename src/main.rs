@@ -8,14 +8,15 @@ use elgato4k_linux::*;
 fn print_usage() {
     println!("Elgato 4K X/S Controller - USB Control Tool\n");
     println!("USAGE:");
-    println!("    sudo elgato4k [OPTIONS]\n");
+    println!("    sudo elgato4k-linux [OPTIONS]\n");
     println!("OPTIONS:");
     println!("    --status                    Read current device settings");
     println!("    --firmware-version          Read firmware version\n");
-    println!("    --hdmi-range <VALUE>        Set HDMI color range (EDID range policy)");
-    println!("    --edid-range <VALUE>        Alias for --hdmi-range");
-    println!("                                Values: expand, shrink, auto");
-    println!("                                (expand = Full, shrink = Limited)\n");
+    println!("    --hdmi-range <VALUE>        Set HDMI color range");
+    println!("                                Values: auto, expand, shrink");
+    println!("                                  auto   = match input source (recommended)");
+    println!("                                  expand = limited (16-235) to full (0-255)");
+    println!("                                  shrink = full (0-255) to limited (16-235)\n");
     println!("    --edid-source <VALUE>       Set EDID source selection");
     println!("                                Values: display, merged, internal");
     println!("                                  display  = passthrough monitor's EDID");
@@ -37,15 +38,15 @@ fn print_usage() {
     println!("                                re-enumerate with a different PID\n");
     println!("    --help, -h                  Show this help message\n");
     println!("EXAMPLES:");
-    println!("    sudo elgato4k --status");
-    println!("    sudo elgato4k --firmware-version");
-    println!("    sudo elgato4k --hdr-map on");
-    println!("    sudo elgato4k --hdmi-range expand --hdr-map on");
-    println!("    sudo elgato4k --edid-source display --hdmi-range auto");
-    println!("    sudo elgato4k --custom-edid on");
-    println!("    sudo elgato4k --audio-input analog  # 4K S only");
-    println!("    sudo elgato4k --video-scaler on     # 4K S only");
-    println!("    sudo elgato4k --usb-speed 10g");
+    println!("    sudo elgato4k-linux --status");
+    println!("    sudo elgato4k-linux --firmware-version");
+    println!("    sudo elgato4k-linux --hdr-map on");
+    println!("    sudo elgato4k-linux --hdmi-range expand --hdr-map on");
+    println!("    sudo elgato4k-linux --edid-source display --hdmi-range auto");
+    println!("    sudo elgato4k-linux --custom-edid on");
+    println!("    sudo elgato4k-linux --audio-input analog  # 4K S only");
+    println!("    sudo elgato4k-linux --video-scaler on     # 4K S only");
+    println!("    sudo elgato4k-linux --usb-speed 10g");
     println!("\nSUPPORTED DEVICES:");
     println!("    Elgato 4K X:");
     println!("      0fd9:009b  (10Gbps / SuperSpeed+)");
@@ -140,7 +141,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         let value = &args[i + 1];
 
         match arg.as_str() {
-            "--hdmi-range" | "--edid-range" => {
+            "--hdmi-range" => {
                 let range: EdidRangePolicy = value.parse().map_err(|_| ElgatoError::InvalidArgument {
                     arg: "--hdmi-range",
                     value: value.clone(),

@@ -39,18 +39,21 @@ impl<T: fmt::Display> fmt::Display for ReadValue<T> {
     }
 }
 
-/// USB speed mode reported by the device (read-only status, not a writable setting).
+/// USB speed mode reported by the device (derived from product ID).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum UsbSpeedStatus {
-    /// 5 Gbps SuperSpeed.
+    /// USB 2.0 High-Speed (480 Mbps).
+    Usb2,
+    /// 5 Gbps SuperSpeed (USB 3.0).
     FiveGbps,
-    /// 10 Gbps SuperSpeed+.
+    /// 10 Gbps SuperSpeed+ (USB 3.1 Gen 2).
     TenGbps,
 }
 
 impl fmt::Display for UsbSpeedStatus {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
+            Self::Usb2 => write!(f, "USB 2.0 (480 Mbps)"),
             Self::FiveGbps => write!(f, "5Gbps (SuperSpeed)"),
             Self::TenGbps => write!(f, "10Gbps (SuperSpeed+)"),
         }
@@ -83,21 +86,23 @@ impl fmt::Display for CustomEdidStatus {
 /// Fields are `None` when a setting is not applicable to the device model
 /// (e.g. `audio_input` is only available on the 4K S) or when the device
 /// returned an unexpected/unreadable response.
+///
+/// **4K X:** Firmware version, USB speed, HDMI color range, and HDR tone
+/// mapping are readable. EDID source, custom EDID, audio input, and video
+/// scaler are not readable.
 #[derive(Debug, Clone)]
 pub struct DeviceStatus {
     /// Firmware version string (e.g. "25.02.10").
     pub firmware_version: String,
     /// USB speed mode (4K X only).
     pub usb_speed: Option<ReadValue<UsbSpeedStatus>>,
-    /// HDMI color range setting.
+    /// HDMI color range (4K X via AT cmd 0x91 family 0x07; 4K S via HID).
     pub hdmi_color_range: Option<ReadValue<EdidRangePolicy>>,
-    /// HDR tone mapping setting.
+    /// HDR tone mapping (4K X via AT cmd 0x90; 4K S via HID).
     pub hdr_tone_mapping: Option<ReadValue<HdrToneMapping>>,
-    /// EDID range policy (4K X only).
-    pub edid_range_policy: Option<ReadValue<EdidRangePolicy>>,
-    /// EDID source selection.
+    /// EDID source selection (4K S only; not readable on 4K X).
     pub edid_source: Option<ReadValue<EdidSource>>,
-    /// Custom EDID preset state (4K X only).
+    /// Custom EDID preset state (not currently readable).
     pub custom_edid: Option<CustomEdidStatus>,
     /// Audio input source (4K S only).
     pub audio_input: Option<ReadValue<AudioInput>>,
@@ -116,9 +121,6 @@ impl fmt::Display for DeviceStatus {
         }
         if let Some(v) = &self.hdr_tone_mapping {
             writeln!(f, "HDR tone mapping: {}", v)?;
-        }
-        if let Some(v) = &self.edid_range_policy {
-            writeln!(f, "EDID range policy: {}", v)?;
         }
         if let Some(v) = &self.edid_source {
             writeln!(f, "EDID source: {}", v)?;
@@ -207,13 +209,14 @@ impl ElgatoDevice {
 
     /// Read the firmware version as a string.
     ///
-    /// - **4K X:** AT command 0x77 (YYMMDD packed decimal).
+    /// - **4K X:** AT command 0x77 via `a1 06` family probe. Response is 133 bytes
+    ///   with ASCII version string at bytes 4–9 (e.g. "250210" = 25.02.10).
     /// - **4K S:** HID read command 0x55/0x02 (BCD DateThreeBytes).
     pub fn read_firmware_version(&self) -> Result<String, ElgatoError> {
         match self.model {
             DeviceModel::Elgato4KX => {
-                match self.read_at_command(AT_CMD_GET_VERSION, 128) {
-                    Ok(data) if data.len() >= 4 => {
+                match self.read_at_command(UVC_SUBCMD_FIRMWARE_VERSION) {
+                    Ok(data) if data.len() >= 10 => {
                         Ok(Self::format_firmware_version_4kx(&data))
                     }
                     Ok(data) => {
@@ -244,23 +247,31 @@ impl ElgatoDevice {
 
     /// Format firmware version from AT command 0x77 response (4K X).
     ///
-    /// versionFormat 2: YYMMDD packed decimal in first 4 bytes as u32 LE.
-    /// e.g. `250210` = firmware version 25.02.10 (2025-02-10).
+    /// The 133-byte response has header `a1 80 81 00` then ASCII YYMMDD at
+    /// bytes 4–9 (e.g. "250210" = firmware version 25.02.10).
     fn format_firmware_version_4kx(data: &[u8]) -> String {
-        let version = u32::from_le_bytes([data[0], data[1], data[2], data[3]]);
-        if version == 0 {
-            return "Unknown (no version reported)".to_string();
+        // Extract ASCII version string starting at byte 4
+        let version_bytes = &data[4..];
+        // Find end of ASCII digits
+        let end = version_bytes.iter().position(|&b| b == 0 || !b.is_ascii_digit()).unwrap_or(version_bytes.len());
+        let version_str = std::str::from_utf8(&version_bytes[..end]).unwrap_or("");
+
+        if version_str.is_empty() || version_str == "0" {
+            return format!("Unknown (raw: {:02x?})", &data[..std::cmp::min(16, data.len())]);
         }
 
-        let yy = version / 10000;
-        let mm = (version / 100) % 100;
-        let dd = version % 100;
+        // Parse YYMMDD
+        if let Ok(version) = version_str.parse::<u32>() {
+            let yy = version / 10000;
+            let mm = (version / 100) % 100;
+            let dd = version % 100;
 
-        if (1..=12).contains(&mm) && (1..=31).contains(&dd) {
-            format!("{:02}.{:02}.{:02} (raw: {})", yy, mm, dd, version)
-        } else {
-            format!("Raw: {} (0x{:08x}, bytes: {:02x?})", version, version, &data[..std::cmp::min(16, data.len())])
+            if (1..=12).contains(&mm) && (1..=31).contains(&dd) {
+                return format!("{:02}.{:02}.{:02}", yy, mm, dd);
+            }
         }
+
+        format!("Raw: {}", version_str)
     }
 
     /// Format firmware version from HID response (4K S).
@@ -293,14 +304,6 @@ impl ElgatoDevice {
         }
     }
 
-    /// Read a single UVC setting at the given length and decode it.
-    fn read_uvc_typed<T>(&self, length: usize, decode: fn(&[u8]) -> Option<T>) -> Option<T> {
-        match self.read_uvc_setting(length) {
-            Ok(data) => decode(&data),
-            Err(_) => None,
-        }
-    }
-
     // --- Internal: 4K S status reading ---
 
     /// Read all 4K S settings into a DeviceStatus.
@@ -313,7 +316,6 @@ impl ElgatoDevice {
             hdr_tone_mapping: self.read_hid_typed(SUBCMD_HDR_TONEMAPPING, decode_hdr),
             hdmi_color_range: self.read_hid_typed(SUBCMD_COLOR_RANGE, decode_color_range),
             edid_source: self.read_hid_typed(SUBCMD_EDID_MODE, decode_edid_mode),
-            edid_range_policy: None,
             custom_edid: None,
             audio_input: self.read_hid_typed(SUBCMD_AUDIO_INPUT, decode_audio_input),
             video_scaler: self.read_hid_typed(SUBCMD_VIDEO_SCALER, decode_video_scaler),
@@ -322,13 +324,33 @@ impl ElgatoDevice {
 
     // --- Internal: 4K X status reading ---
 
-    /// Read USB speed from the 4K X via AT command.
+    /// Determine USB speed from the device's Product ID.
+    ///
+    /// The 4K X uses a different PID for each USB speed mode:
+    /// - 0x009b = 10 Gbps (SuperSpeed+)
+    /// - 0x009c = 5 Gbps (SuperSpeed)
+    /// - 0x009d = USB 2.0
     fn read_usb_speed_4kx(&self) -> Option<ReadValue<UsbSpeedStatus>> {
-        match self.read_at_command(AT_CMD_GET_USB_SPEED, 128) {
+        Some(match self.pid {
+            0x009b => ReadValue::Known(UsbSpeedStatus::TenGbps),
+            0x009c => ReadValue::Known(UsbSpeedStatus::FiveGbps),
+            0x009d => ReadValue::Known(UsbSpeedStatus::Usb2),
+            _ => return None,
+        })
+    }
+
+    /// Read HDMI color range (EDID Range Policy) from the 4K X via AT command 0x91.
+    ///
+    /// Uses the `a1 07` family (10-byte probe with param byte 0x01).
+    /// Response byte[4] mirrors the `0x7c` write byte[9]:
+    /// 0x00=Auto, 0x03=Expand, 0x04=Shrink.
+    fn read_color_range_4kx(&self) -> Option<ReadValue<EdidRangePolicy>> {
+        match self.read_at_command_family07(UVC_SUBCMD_EDID_RANGE_READ, 0x01) {
             Ok(data) if data.len() > 4 => {
                 Some(match data[4] {
-                    0x00 => ReadValue::Known(UsbSpeedStatus::FiveGbps),
-                    0x01 => ReadValue::Known(UsbSpeedStatus::TenGbps),
+                    0x00 => ReadValue::Known(EdidRangePolicy::Auto),
+                    0x03 => ReadValue::Known(EdidRangePolicy::Expand),
+                    0x04 => ReadValue::Known(EdidRangePolicy::Shrink),
                     v => ReadValue::Unknown(v),
                 })
             }
@@ -336,71 +358,13 @@ impl ElgatoDevice {
         }
     }
 
-    // --- Internal: UVC typed decoders (4K X) ---
-
-    /// Decode UVC color range response (family 0x06, 9 bytes).
-    fn decode_uvc_color_range(data: &[u8]) -> Option<ReadValue<EdidRangePolicy>> {
-        if data.len() < 9 || data[0] != 0xa1 || data[1] != UVC_FAMILY_COLOR_RANGE {
-            return None;
-        }
-        Some(match data[4] {
-            0x43 => ReadValue::Known(EdidRangePolicy::Expand),
-            0x2b => ReadValue::Known(EdidRangePolicy::Shrink),
-            0x37 => ReadValue::Known(EdidRangePolicy::Auto),
-            v => ReadValue::Unknown(v),
-        })
-    }
-
-    /// Decode UVC HDR tone mapping response (family 0x07, 10 bytes).
-    fn decode_uvc_hdr(data: &[u8]) -> Option<ReadValue<HdrToneMapping>> {
-        if data.len() < 10 || data[0] != 0xa1 || data[1] != UVC_FAMILY_HDR || data[4] != 0x1f {
-            return None;
-        }
-        Some(match data[8] {
-            0x01 => ReadValue::Known(HdrToneMapping::On),
-            0x00 => ReadValue::Known(HdrToneMapping::Off),
-            v => ReadValue::Unknown(v),
-        })
-    }
-
-    /// Decode UVC EDID range policy response (family 0x08, 11 bytes).
-    fn decode_uvc_edid_range(data: &[u8]) -> Option<ReadValue<EdidRangePolicy>> {
-        if data.len() < 11 || data[0] != 0xa1 || data[1] != UVC_FAMILY_EDID_RANGE || data[4] != 0x7c {
-            return None;
-        }
-        Some(match data[9] {
-            0x00 => ReadValue::Known(EdidRangePolicy::Auto),
-            0x03 => ReadValue::Known(EdidRangePolicy::Expand),
-            0x04 => ReadValue::Known(EdidRangePolicy::Shrink),
-            v => ReadValue::Unknown(v),
-        })
-    }
-
-    /// Decode UVC EDID source / custom EDID response (family 0x0a, 13 bytes).
+    /// Read HDR tone mapping state from the 4K X via AT command 0x90.
     ///
-    /// Returns `(edid_source, custom_edid)` — exactly one will be `Some`.
-    fn decode_uvc_edid_source(data: &[u8]) -> (Option<ReadValue<EdidSource>>, Option<CustomEdidStatus>) {
-        if data.len() < 13 || data[0] != 0xa1 || data[1] != UVC_FAMILY_EDID_SOURCE {
-            return (None, None);
-        }
-        match data[4] {
-            0x4d => {
-                let v = match data[8] {
-                    0x01 => ReadValue::Known(EdidSource::Display),
-                    0x04 => ReadValue::Known(EdidSource::Merged),
-                    0x00 => ReadValue::Known(EdidSource::Internal),
-                    v => ReadValue::Unknown(v),
-                };
-                (Some(v), None)
-            }
-            0x54 => {
-                let status = match data[9] {
-                    0x00 => CustomEdidStatus::Off,
-                    idx => CustomEdidStatus::On { preset_index: idx },
-                };
-                (None, Some(status))
-            }
-            _ => (None, None),
+    /// Standard `a1 06` family probe. Response byte[4]: 0x01=On, 0x00=Off.
+    fn read_hdr_4kx(&self) -> Option<ReadValue<HdrToneMapping>> {
+        match self.read_at_command(UVC_SUBCMD_HDR_READ) {
+            Ok(data) if data.len() > 4 => Some(decode_hdr(data[4])),
+            _ => None,
         }
     }
 
@@ -408,20 +372,16 @@ impl ElgatoDevice {
     fn read_status_4kx(&self) -> Result<DeviceStatus, ElgatoError> {
         let firmware_version = self.read_firmware_version()?;
         let usb_speed = self.read_usb_speed_4kx();
-
-        let (edid_source, custom_edid) = match self.read_uvc_setting(13) {
-            Ok(data) => Self::decode_uvc_edid_source(&data),
-            Err(_) => (None, None),
-        };
+        let hdmi_color_range = self.read_color_range_4kx();
+        let hdr_tone_mapping = self.read_hdr_4kx();
 
         Ok(DeviceStatus {
             firmware_version,
             usb_speed,
-            hdmi_color_range: self.read_uvc_typed(9, Self::decode_uvc_color_range),
-            hdr_tone_mapping: self.read_uvc_typed(10, Self::decode_uvc_hdr),
-            edid_range_policy: self.read_uvc_typed(11, Self::decode_uvc_edid_range),
-            edid_source,
-            custom_edid,
+            hdmi_color_range,
+            hdr_tone_mapping,
+            edid_source: None,
+            custom_edid: None,
             audio_input: None,
             video_scaler: None,
         })
@@ -480,16 +440,20 @@ mod tests {
 
     #[test]
     fn firmware_version_4kx_valid() {
-        let data = 250210u32.to_le_bytes();
+        // Simulated 133-byte response: a1 80 81 00 "250210" + zeros
+        let mut data = vec![0xa1, 0x80, 0x81, 0x00];
+        data.extend_from_slice(b"250210");
+        data.resize(133, 0x00);
         let result = ElgatoDevice::format_firmware_version_4kx(&data);
-        assert_eq!(result, "25.02.10 (raw: 250210)");
+        assert_eq!(result, "25.02.10");
     }
 
     #[test]
-    fn firmware_version_4kx_zero() {
-        let data = 0u32.to_le_bytes();
+    fn firmware_version_4kx_all_zero() {
+        let mut data = vec![0xa1, 0x80, 0x81, 0x00];
+        data.resize(133, 0x00);
         let result = ElgatoDevice::format_firmware_version_4kx(&data);
-        assert_eq!(result, "Unknown (no version reported)");
+        assert!(result.starts_with("Unknown"));
     }
 
     #[test]
@@ -511,65 +475,6 @@ mod tests {
         let data = [0x00, 0x00, 0x00, 0x25, 0x15, 0x03, 0x00, 0x00];
         let result = ElgatoDevice::format_firmware_version_4ks(&data);
         assert!(result.starts_with("Raw:"));
-    }
-
-    // --- UVC decode tests ---
-
-    #[test]
-    fn decode_uvc_color_range_expand() {
-        let data = [0xa1, 0x06, 0x00, 0x00, 0x43, 0x00, 0x00, 0x00, 0x00];
-        assert_eq!(
-            ElgatoDevice::decode_uvc_color_range(&data),
-            Some(ReadValue::Known(EdidRangePolicy::Expand))
-        );
-    }
-
-    #[test]
-    fn decode_uvc_hdr_on() {
-        let data = [0xa1, 0x07, 0x00, 0x00, 0x1f, 0x00, 0x00, 0x00, 0x01, 0x38];
-        assert_eq!(
-            ElgatoDevice::decode_uvc_hdr(&data),
-            Some(ReadValue::Known(HdrToneMapping::On))
-        );
-    }
-
-    #[test]
-    fn decode_uvc_edid_range_expand() {
-        let data = [0xa1, 0x08, 0x00, 0x00, 0x7c, 0x00, 0x00, 0x00, 0x01, 0x03, 0xd7];
-        assert_eq!(
-            ElgatoDevice::decode_uvc_edid_range(&data),
-            Some(ReadValue::Known(EdidRangePolicy::Expand))
-        );
-    }
-
-    #[test]
-    fn decode_uvc_edid_source_display() {
-        let data = [0xa1, 0x0a, 0x00, 0x00, 0x4d, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x07];
-        let (source, custom) = ElgatoDevice::decode_uvc_edid_source(&data);
-        assert_eq!(source, Some(ReadValue::Known(EdidSource::Display)));
-        assert!(custom.is_none());
-    }
-
-    #[test]
-    fn decode_uvc_custom_edid_on() {
-        let data = [0xa1, 0x0a, 0x00, 0x00, 0x54, 0x00, 0x00, 0x00, 0x00, 0x01, 0x80, 0x00, 0x80];
-        let (source, custom) = ElgatoDevice::decode_uvc_edid_source(&data);
-        assert!(source.is_none());
-        assert_eq!(custom, Some(CustomEdidStatus::On { preset_index: 1 }));
-    }
-
-    #[test]
-    fn decode_uvc_custom_edid_off() {
-        let data = [0xa1, 0x0a, 0x00, 0x00, 0x54, 0x00, 0x00, 0x00, 0x00, 0x00, 0x80, 0x00, 0x80];
-        let (source, custom) = ElgatoDevice::decode_uvc_edid_source(&data);
-        assert!(source.is_none());
-        assert_eq!(custom, Some(CustomEdidStatus::Off));
-    }
-
-    #[test]
-    fn decode_uvc_invalid_header() {
-        let data = [0xb2, 0x06, 0x00, 0x00, 0x43, 0x00, 0x00, 0x00, 0x00];
-        assert_eq!(ElgatoDevice::decode_uvc_color_range(&data), None);
     }
 
     // --- ReadValue Display tests ---
@@ -598,6 +503,7 @@ mod tests {
 
     #[test]
     fn usb_speed_status_display() {
+        assert_eq!(format!("{}", UsbSpeedStatus::Usb2), "USB 2.0 (480 Mbps)");
         assert_eq!(format!("{}", UsbSpeedStatus::FiveGbps), "5Gbps (SuperSpeed)");
         assert_eq!(format!("{}", UsbSpeedStatus::TenGbps), "10Gbps (SuperSpeed+)");
     }

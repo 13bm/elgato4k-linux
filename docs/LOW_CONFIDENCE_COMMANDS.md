@@ -219,6 +219,113 @@ These read-only commands are safe and documented here for completeness:
 | 0x1c | 1 | Unknown setting | Not implemented |
 | 0x2d | 1 | Unknown setting | Not implemented |
 
+## Custom EDID Upload Protocol (4K X — UVC)
+
+> **Source:** USB pcap of Windows Elgato software uploading a custom 1080p EDID. Only one capture available — findings are based on a single observation.
+
+### Overview
+
+Custom EDID upload on the 4K X uses a firmware flash sequence that puts the device into rescue mode, sends the EDID data, then finalizes with an `upgrade` command. The device **re-enumerates** during this process (USB address changes).
+
+This is completely separate from the `--custom-edid on/off` toggle (family `0x0a`, cmd `0x54`), which uses the normal `a1 XX` setting write protocol.
+
+### Sequence
+
+#### Step 1: Enter Rescue Mode (138 bytes, trigger `8a 00`)
+
+```
+05 80 01 00 00 00 00 00  "enter_rescue\0"  [zeros to 136B]  [2B checksum]
+```
+
+- Sent to **selector 0x01** via normal SET_CUR after trigger `8a 00`
+- Header: `05 80 01 00 00 00 00 00` (8 bytes — possibly AT command ID `0x8005` with flags)
+- ASCII string `"enter_rescue"` at byte 8, null-terminated
+- Zero-padded to 136 bytes + 2-byte checksum at end (`1e 4f` in capture)
+- **Device re-enumerates after this** — USB device address changed from 13 to 14 in the pcap (~0.4s later)
+
+#### Step 2: Upload EDID Data (4106 bytes, trigger `0a 10`)
+
+```
+[slot_index u8] [7 zero bytes] [EDID data, zero-padded to 4098 bytes]
+```
+
+- **Byte 0:** Preset slot index (`03` in capture)
+- **Bytes 1-7:** All zeros
+- **Bytes 8-4105:** EDID data buffer (actual EDID bytes followed by zero padding)
+- Total: 4106 bytes = 8-byte header + 4098-byte EDID buffer
+
+In the captured upload:
+- The user's EDID file was 256 bytes (128B base + 128B CEA extension, monitor name "Elgato1080")
+- The Elgato software appended additional extension blocks (~256 bytes of extra CEA/DisplayID data) before uploading
+- Remaining buffer was zero-padded to 4098 bytes
+
+**Open question:** Does the software always generate these extra extension blocks, or does it pass the EDID file through unmodified for larger EDIDs?
+
+#### Step 3: Finalize (138 bytes, trigger `8a 00`)
+
+```
+05 80 01 00 00 00 00 00  "upgrade\0"  05 ee  [20B hash?]  [zeros]  [2B checksum]
+```
+
+- Same 8-byte header as `enter_rescue`
+- ASCII string `"upgrade"` at byte 8, null-terminated
+- Bytes 16-17: `05 ee` (unknown meaning — version? command code?)
+- Bytes 18-37: 20 bytes of high-entropy data (`94 c0 94 34 1b ef 3d bd c7 02 4e f5 ab a0 ef af 0e 89 f9 63`) — likely a SHA-1 hash for integrity validation
+- Zero-padded to 136 bytes + 2-byte checksum (`bd 9d`)
+
+**Open question:** What is being hashed? Candidates: the EDID data, the full 4106-byte upload payload, or something else. Cannot verify without a second capture or the hashing code.
+
+### Custom EDID Toggle (Family 0x0a, Cmd 0x54)
+
+The on/off toggle is already implemented (`--custom-edid on/off`) and uses the standard `a1 XX` protocol:
+
+```
+a1 0a 00 00 54 00 00 00 [byte8] [byte9] 80 00 [checksum]
+```
+
+Current implementation (from Ghidra decompilation, confirmed working):
+- **Off:** `00 00 80 00 81` (byte8=`0x00`, byte9=`0x00`)
+- **On:** `00 01 80 00 80` (byte8=`0x00`, byte9=`0x01`)
+
+The pcap showed additional variants with byte8=`0x80` (e.g., `80 01 80 00` for "on slot 1"). The `0x80` flag at byte8 may mean "apply/activate" vs our `0x00` which also works. The exact semantics are unclear — our existing payloads work, so no change needed.
+
+Pcap showed slot indices 0-13 being toggled. Bytes 10-11 are always `80 00` in all observed instances.
+
+**Known preset slot mapping** (from Elgato software UI):
+
+| Slot | Preset Name |
+|------|-------------|
+| 0 | Game Capture 4K X (Default) |
+| 1 | 1080p |
+| 2 | 1080p120 for mobile |
+| 3 | 1080p for Steam Deck |
+| 4 | 1080p HDR |
+| 5 | 1280x800 for Steam Deck |
+| 6 | 1440p |
+| 7 | 1440p HDR |
+| 8 | 3440x1440 |
+| 9 | 3440x1440 HDR |
+| 10 | 4K X 2560x1080 |
+| 11 | 4K X 3440x1440 |
+| 12 | Custom (user-uploaded via "Select file...") |
+| 13 | *(unknown — may be a second custom slot)* |
+
+Note: Our `--custom-edid on` currently uses byte9=`0x01` (slot 1 = "1080p"). This may not be the intended behavior — it should probably activate whichever custom EDID the user uploaded (slot 12 or 13).
+
+### Risks
+
+1. **`enter_rescue` triggers firmware flash mode** — sending this without completing the full sequence could leave the device in an intermediate state
+2. **Device re-enumerates** — the USB handle becomes invalid after `enter_rescue`, requiring device re-discovery
+3. **`upgrade` contains a hash** — if we compute the wrong hash, the device may reject the upload or flash corrupt data
+4. **Only one capture available** — all findings are based on a single EDID upload session
+5. **Software modifies the EDID** — the Elgato software appears to append extension blocks to the user's EDID file before uploading, so raw file upload may not work
+
+### NOT Implemented
+
+The EDID upload protocol is **not implemented** in the tool. Only the on/off toggle (`--custom-edid on/off`) is implemented.
+
+---
+
 ## Methodology
 
 All of the above was discovered through:

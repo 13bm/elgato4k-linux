@@ -390,13 +390,21 @@ impl FromStr for UsbSpeed {
 impl UsbSpeed {
     pub const VALID_VALUES: &str = "5g, 10g";
 
-    /// AT command 0x8e input: `[01,00,00,00, speed,00,00,00]`.
+    /// AT command 0x8e input: 8-byte payload.
+    ///
+    /// From RTICE_SDK_X64 decompilation of `AT_USB_Set_Force_Speed`:
+    /// ```c
+    /// local_418 = 1;         // bytes 0-3: constant 0x00000001 (u32 LE)
+    /// local_414 = param_1;   // bytes 4-7: speed value (u32 LE)
+    /// rtk_sendATCommand(0x8e, &local_418, local_218, 8);
+    /// ```
+    /// Speed values (from EGAVDeviceSupport `SetUseUSBSpeed10G`):
+    ///   `AT_USB_Set_Force_Speed(-(param_2 != '\0') & 3)` → 0x00=5Gbps, 0x03=10Gbps.
     pub fn at_input(&self) -> [u8; 8] {
-        let speed_byte: u8 = match self {
-            Self::FiveGbps => 0x00,
-            Self::TenGbps  => 0x01,
-        };
-        [0x01, 0x00, 0x00, 0x00, speed_byte, 0x00, 0x00, 0x00]
+        match self {
+            Self::FiveGbps => [0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00],
+            Self::TenGbps  => [0x01, 0x00, 0x00, 0x00, 0x03, 0x00, 0x00, 0x00],
+        }
     }
 }
 
@@ -504,9 +512,11 @@ mod tests {
     #[test]
     fn usb_speed_at_input() {
         let five = UsbSpeed::FiveGbps.at_input();
+        // Bytes 0-3: constant 1 (u32 LE), Bytes 4-7: speed 0x00=5Gbps
         assert_eq!(five, [0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00]);
         let ten = UsbSpeed::TenGbps.at_input();
-        assert_eq!(ten, [0x01, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00]);
+        // Bytes 0-3: constant 1 (u32 LE), Bytes 4-7: speed 0x03=10Gbps
+        assert_eq!(ten, [0x01, 0x00, 0x00, 0x00, 0x03, 0x00, 0x00, 0x00]);
     }
 
     #[test]
