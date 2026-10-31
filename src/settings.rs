@@ -215,48 +215,6 @@ impl HdrToneMapping {
 }
 
 // ---------------------------------------------------------------------------
-// Custom EDID (4K X only)
-// ---------------------------------------------------------------------------
-
-/// Custom EDID preset toggle (4K X only).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum CustomEdidMode {
-    Off,
-    On,
-}
-
-impl fmt::Display for CustomEdidMode {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::On => write!(f, "On"),
-            Self::Off => write!(f, "Off"),
-        }
-    }
-}
-
-impl FromStr for CustomEdidMode {
-    type Err = ();
-    fn from_str(s: &str) -> Result<Self, Self::Err> {
-        match s.to_lowercase().as_str() {
-            "on" | "true" | "1" => Ok(Self::On),
-            "off" | "false" | "0" => Ok(Self::Off),
-            _ => Err(()),
-        }
-    }
-}
-
-impl CustomEdidMode {
-    pub const VALID_VALUES: &str = "on, off";
-
-    pub fn payload_4kx(&self) -> &'static [u8] {
-        match self {
-            Self::Off => &[0xa1, 0x0a, 0x00, 0x00, 0x54, 0x00, 0x00, 0x00, 0x00, 0x00, 0x80, 0x00, 0x81],
-            Self::On  => &[0xa1, 0x0a, 0x00, 0x00, 0x54, 0x00, 0x00, 0x00, 0x00, 0x01, 0x80, 0x00, 0x80],
-        }
-    }
-}
-
-// ---------------------------------------------------------------------------
 // Audio Input (4K S only)
 // ---------------------------------------------------------------------------
 
@@ -468,7 +426,6 @@ mod tests {
         assert_eq!(EdidRangePolicy::Expand.payload_4kx()[0], 0xa1);
         assert_eq!(EdidSource::Display.payload_4kx()[0], 0xa1);
         assert_eq!(HdrToneMapping::On.payload_4kx()[0], 0xa1);
-        assert_eq!(CustomEdidMode::Off.payload_4kx()[0], 0xa1);
     }
 
     #[test]

@@ -10,7 +10,9 @@ keywords = ["elgato", "capture-card", "usb", "uvc", "hid"]
 categories = ["hardware-support", "command-line-utilities"]
 
 [dependencies]
+libc = "0.2"
 rusb = "0.9"
+sha2 = "0.10"
 thiserror = "2.0.18"
 ureq = { version = "3", optional = true }
 

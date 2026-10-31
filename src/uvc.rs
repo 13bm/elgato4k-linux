@@ -1,8 +1,9 @@
 //! UVC Extension Unit transport for the 4K X.
 //!
 //! The 4K X uses UVC XU #4 (GUID `961073c7-49f7-44f2-ab42-e940405940c2`) on
-//! Interface 0.  Every setting change is a two-step write: trigger (selector
-//! 0x02) then payload (selector 0x01).
+//! Interface 0. Normal settings use a two-step write: trigger (selector 0x02)
+//! then payload (selector 0x01). Realtek's firmware updater instead sends its
+//! command/data packets through the extra-I2C writer on selector 0x04.
 //!
 //! **Read protocol** (observed in Windows pcaps):
 //!   1. SET_CUR sel 2 (trigger with payload length)
@@ -41,6 +42,41 @@ pub(crate) fn frame_at_command(cmd_id: u32, input: &[u8]) -> Vec<u8> {
     payload.extend_from_slice(&data);
     payload.push(lrc(&payload));
     payload
+}
+
+pub(crate) fn decode_at_response(response: &[u8]) -> Result<&[u8], ElgatoError> {
+    if response.len() < 5 || response[0] != 0xa1 || response[3] != 0 {
+        return Err(ElgatoError::UvcTransfer(
+            "invalid AT response header".into(),
+        ));
+    }
+    let extended = response[1] & 0x80 != 0;
+    let encoded_length = if extended {
+        (usize::from(response[1] & 0x7f) << 8) | usize::from(response[2])
+    } else {
+        usize::from(response[1])
+    };
+    // Short frames count two framing bytes; extended frames count only the
+    // payload plus LRC. E.g. the four-byte HDMI state is a1 06 00 00 + data + LRC.
+    let overhead = if extended { 4 } else { 3 };
+    if encoded_length == 0 || response.len() != encoded_length + overhead {
+        return Err(ElgatoError::UvcTransfer(format!(
+            "AT response length mismatch: received {}, encoded {}, prefix {:02x?}",
+            response.len(),
+            encoded_length,
+            &response[..response.len().min(16)]
+        )));
+    }
+    if response
+        .iter()
+        .fold(0u8, |sum, byte| sum.wrapping_add(*byte))
+        != 0
+    {
+        return Err(ElgatoError::UvcTransfer(
+            "AT response LRC is invalid".into(),
+        ));
+    }
+    Ok(&response[4..response.len() - 1])
 }
 
 /// Build a family 0x06 AT read probe: `[a1, 06, 00, 00, sub_cmd, 00, 00, 00, LRC]`.
@@ -104,11 +140,17 @@ impl ElgatoDevice {
         Ok(())
     }
 
-    /// Two-step write: length trigger + payload (for `a1 XX` style commands).
+    /// Write a setting and complete the device's write/status/read transaction.
+    /// RTICE's `rtk_sendATCommand` always performs this response read; without
+    /// it EDID mode changes can be left unapplied by the firmware.
     ///
     /// The trigger announces the payload length as a u16 LE value, matching
     /// the Windows driver behavior observed in USB captures.
     pub(crate) fn set_uvc_setting(&self, payload: &[u8]) -> Result<(), ElgatoError> {
+        self.probe_uvc_setting(payload).map(|_| ())
+    }
+
+    fn write_uvc_setting(&self, payload: &[u8]) -> Result<(), ElgatoError> {
         let trigger = (payload.len() as u16).to_le_bytes();
         self.send_uvc_trigger_data(&trigger)?;
         self.send_uvc_payload(payload)?;
@@ -202,7 +244,7 @@ impl ElgatoDevice {
     ///   4. GET_LEN sel 1 (query dynamic response size)
     ///   5. GET_CUR sel 1 (read response)
     pub(crate) fn probe_uvc_setting(&self, probe: &[u8]) -> Result<Vec<u8>, ElgatoError> {
-        self.set_uvc_setting(probe)?;
+        self.write_uvc_setting(probe)?;
         // Poll sel 2 status — matches Windows behavior and gives the device
         // time to process the command before we query GET_LEN on sel 1
         self.poll_uvc_status()?;
@@ -238,6 +280,107 @@ impl ElgatoDevice {
 
         let payload = frame_at_command(cmd_id, input);
         self.probe_uvc_setting(&payload)
+    }
+
+    /// Read the complete seven-slot custom EDID flash table.
+    pub fn read_edid_table(&self) -> Result<Vec<u8>, ElgatoError> {
+        if self.model != DeviceModel::Elgato4KX {
+            return Err(ElgatoError::UnsupportedFeature {
+                feature: "Custom EDID table reading",
+                model: "4K S",
+            });
+        }
+        const CHUNK_SIZE: usize = 0x80;
+        const TABLE_SIZE: usize = 0xe00;
+        let mut table = Vec::with_capacity(TABLE_SIZE);
+        for offset in (0..TABLE_SIZE).step_by(CHUNK_SIZE) {
+            let mut input = Vec::with_capacity(4);
+            input.extend_from_slice(&(offset as u16).to_le_bytes());
+            input.extend_from_slice(&(CHUNK_SIZE as u16).to_le_bytes());
+            let response = self.send_at_command(0x54, &input)?;
+            let chunk = decode_at_response(&response)?;
+            if chunk.len() != CHUNK_SIZE {
+                return Err(ElgatoError::UvcTransfer(
+                    "EDID table chunk size mismatch".into(),
+                ));
+            }
+            table.extend_from_slice(chunk);
+        }
+        Ok(table)
+    }
+
+    pub(crate) fn enter_update_mode(&self, packet: &[u8]) -> Result<(), ElgatoError> {
+        if let Err(error) = self.write_update_payload(packet) {
+            if error.to_string().contains("No such device") {
+                return Ok(());
+            }
+            return Err(error);
+        }
+
+        let mut last_response = Vec::new();
+        for _ in 0..40 {
+            match self.read_update_response() {
+                Ok(response) if response.first().copied() == Some(0x06) => return Ok(()),
+                Ok(response) => last_response = response,
+                Err(error) if error.to_string().contains("No such device") => return Ok(()),
+                Err(error) => return Err(error),
+            }
+            std::thread::sleep(std::time::Duration::from_millis(50));
+        }
+
+        Err(ElgatoError::UvcTransfer(format!(
+            "enter_rescue neither acknowledged nor disconnected: {:02x?}",
+            last_response
+        )))
+    }
+
+    /// RTK_IO routes updater writes through CProtocol::extraI2CSendBytes and
+    /// CUVCExtensionPort's selector-4 write method.
+    fn write_update_payload(&self, payload: &[u8]) -> Result<(), ElgatoError> {
+        let written = self
+            .handle
+            .write_control(
+                UVC_REQUEST_TYPE_OUT,
+                UVC_SET_CUR,
+                UVC_SELECTOR_EXTRA_I2C_WRITE << 8,
+                (UVC_ENTITY_ID << 8) | UVC_INTERFACE,
+                payload,
+                USB_TIMEOUT,
+            )
+            .map_err(|e| {
+                ElgatoError::UvcTransfer(format!("updater selector-4 SET_CUR failed: {}", e))
+            })?;
+        if written != payload.len() {
+            return Err(ElgatoError::UvcTransfer(format!(
+                "updater selector-4 SET_CUR wrote {} of {} bytes",
+                written,
+                payload.len()
+            )));
+        }
+        Ok(())
+    }
+
+    /// Read the updater ACK through CUVCExtensionPort's extra-I2C read method.
+    /// The native implementation pairs extraI2CSendBytes (selector 4 SET)
+    /// with extraI2CReadBytes (selector 4 GET), using a 0x400-byte buffer.
+    fn read_update_response(&self) -> Result<Vec<u8>, ElgatoError> {
+        let w_index = (UVC_ENTITY_ID << 8) | UVC_INTERFACE;
+        let mut response = vec![0u8; 0x400];
+        let response_len = self
+            .handle
+            .read_control(
+                UVC_REQUEST_TYPE_IN,
+                UVC_GET_CUR,
+                UVC_SELECTOR_EXTRA_I2C_WRITE << 8,
+                w_index,
+                &mut response,
+                USB_TIMEOUT,
+            )
+            .map_err(|e| {
+                ElgatoError::UvcTransfer(format!("updater response GET_CUR failed: {}", e))
+            })?;
+        response.truncate(response_len);
+        Ok(response)
     }
 
     /// Read an AT command response via `a1 06` family probe (4K X only).
@@ -359,5 +502,33 @@ mod tests {
         assert_eq!(payload[4], 0x67);
         let total: u8 = payload.iter().fold(0u8, |acc, &b| acc.wrapping_add(b));
         assert_eq!(total, 0);
+    }
+
+    #[test]
+    fn decode_extended_at_response() {
+        let data = vec![0x5a; 0x80];
+        let mut response = vec![0xa1, 0x80, 0x81, 0x00];
+        response.extend_from_slice(&data);
+        response.push(lrc(&response));
+        assert_eq!(decode_at_response(&response).unwrap(), data);
+    }
+
+    #[test]
+    fn decode_at_response_rejects_bad_length_and_lrc() {
+        let mut response = vec![0xa1, 0x06, 0x00, 0x00, 1, 2, 3, 4];
+        response.push(lrc(&response));
+        assert!(decode_at_response(&response).is_ok());
+        response[1] = 7;
+        assert!(decode_at_response(&response).is_err());
+        response[1] = 6;
+        response[4] ^= 1;
+        assert!(decode_at_response(&response).is_err());
+    }
+
+    #[test]
+    fn decode_captured_short_hdmi_state_response() {
+        let response = [0xa1, 0x06, 0x00, 0x00, 1, 0, 0, 0, 0x58];
+        assert_eq!(decode_at_response(&response).unwrap(), [1, 0, 0, 0]);
+        assert!(decode_at_response(&response[..8]).is_err());
     }
 }

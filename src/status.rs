@@ -15,6 +15,7 @@ use crate::protocol::*;
 use crate::settings::{
     AudioInput, DeviceModel, EdidRangePolicy, EdidSource, HdrToneMapping, VideoScaler,
 };
+use crate::signal::HdmiSignal;
 
 // ---------------------------------------------------------------------------
 // Public types
@@ -60,27 +61,6 @@ impl fmt::Display for UsbSpeedStatus {
     }
 }
 
-/// Custom EDID preset state as read from the device (4K X only).
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum CustomEdidStatus {
-    /// Custom EDID is disabled.
-    Off,
-    /// Custom EDID is enabled with the given preset index.
-    On {
-        /// The preset index selected on the device.
-        preset_index: u8,
-    },
-}
-
-impl fmt::Display for CustomEdidStatus {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::Off => write!(f, "Off"),
-            Self::On { preset_index } => write!(f, "On (preset index {})", preset_index),
-        }
-    }
-}
-
 /// All readable settings from a device.
 ///
 /// Fields are `None` when a setting is not applicable to the device model
@@ -88,10 +68,12 @@ impl fmt::Display for CustomEdidStatus {
 /// returned an unexpected/unreadable response.
 ///
 /// **4K X:** Firmware version, USB speed, HDMI color range, and HDR tone
-/// mapping are readable. EDID source, custom EDID, audio input, and video
-/// scaler are not readable.
+/// mapping are readable. EDID source, audio input, and video scaler are not
+/// readable.
 #[derive(Debug, Clone)]
 pub struct DeviceStatus {
+    /// Current HDMI receiver timing (4K X); None if unsupported or unreadable.
+    pub hdmi_signal: Option<HdmiSignal>,
     /// Firmware version string (e.g. "25.02.10").
     pub firmware_version: String,
     /// USB speed mode (4K X only).
@@ -102,8 +84,6 @@ pub struct DeviceStatus {
     pub hdr_tone_mapping: Option<ReadValue<HdrToneMapping>>,
     /// EDID source selection (4K S only; not readable on 4K X).
     pub edid_source: Option<ReadValue<EdidSource>>,
-    /// Custom EDID preset state (not currently readable).
-    pub custom_edid: Option<CustomEdidStatus>,
     /// Audio input source (4K S only).
     pub audio_input: Option<ReadValue<AudioInput>>,
     /// Video scaler state (4K S only).
@@ -115,6 +95,10 @@ impl fmt::Display for DeviceStatus {
         writeln!(f, "Firmware version: {}", self.firmware_version)?;
         if let Some(v) = &self.usb_speed {
             writeln!(f, "USB speed: {}", v)?;
+            match &self.hdmi_signal {
+                Some(signal) => writeln!(f, "HDMI input: {}", signal)?,
+                None => writeln!(f, "HDMI input: unavailable (use --signal for the error)")?,
+            }
         }
         if let Some(v) = &self.hdmi_color_range {
             writeln!(f, "HDMI color range: {}", v)?;
@@ -124,9 +108,6 @@ impl fmt::Display for DeviceStatus {
         }
         if let Some(v) = &self.edid_source {
             writeln!(f, "EDID source: {}", v)?;
-        }
-        if let Some(v) = &self.custom_edid {
-            writeln!(f, "Custom EDID: {}", v)?;
         }
         if let Some(v) = &self.audio_input {
             writeln!(f, "Audio input: {}", v)?;
@@ -320,10 +301,10 @@ impl ElgatoDevice {
         Ok(DeviceStatus {
             firmware_version,
             usb_speed: None,
+            hdmi_signal: None,
             hdr_tone_mapping: self.read_hid_typed(SUBCMD_HDR_TONEMAPPING, decode_hdr)?,
             hdmi_color_range: self.read_hid_typed(SUBCMD_COLOR_RANGE, decode_color_range)?,
             edid_source: self.read_hid_typed(SUBCMD_EDID_MODE, decode_edid_mode)?,
-            custom_edid: None,
             audio_input: self.read_hid_typed(SUBCMD_AUDIO_INPUT, decode_audio_input)?,
             video_scaler: self.read_hid_typed(SUBCMD_VIDEO_SCALER, decode_video_scaler)?,
         })
@@ -385,10 +366,10 @@ impl ElgatoDevice {
         Ok(DeviceStatus {
             firmware_version,
             usb_speed,
+            hdmi_signal: self.read_hdmi_signal().ok(),
             hdmi_color_range,
             hdr_tone_mapping,
             edid_source: None,
-            custom_edid: None,
             audio_input: None,
             video_scaler: None,
         })
@@ -520,14 +501,6 @@ mod tests {
     fn read_value_display_unknown() {
         let v: ReadValue<HdrToneMapping> = ReadValue::Unknown(0xab);
         assert_eq!(format!("{}", v), "Unknown (0xab)");
-    }
-
-    // --- CustomEdidStatus Display tests ---
-
-    #[test]
-    fn custom_edid_status_display() {
-        assert_eq!(format!("{}", CustomEdidStatus::Off), "Off");
-        assert_eq!(format!("{}", CustomEdidStatus::On { preset_index: 3 }), "On (preset index 3)");
     }
 
     // --- UsbSpeedStatus Display tests ---

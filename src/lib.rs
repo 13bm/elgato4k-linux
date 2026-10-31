@@ -18,17 +18,22 @@
 //! ```
 
 mod device;
+mod edid;
 mod error;
 mod hid;
 mod protocol;
 mod settings;
+mod signal;
 mod status;
 mod uvc;
+mod v4l2;
 
 pub use device::ElgatoDevice;
+pub use edid::{EdidUploadPlan, validate_edid};
 pub use error::ElgatoError;
 pub use settings::{
-    AudioInput, CustomEdidMode, DeviceModel, EdidRangePolicy,
-    EdidSource, HdrToneMapping, UsbSpeed, VideoScaler,
+    AudioInput, DeviceModel, EdidRangePolicy, EdidSource, HdrToneMapping, UsbSpeed, VideoScaler,
 };
-pub use status::{CustomEdidStatus, DeviceStatus, ReadValue, UsbSpeedStatus};
+pub use signal::{HdmiSignal, HdmiTiming};
+pub use status::{DeviceStatus, ReadValue, UsbSpeedStatus};
+pub use v4l2::{find_hdmi_video_device, read_hdmi_signal_v4l2};
