@@ -11,7 +11,8 @@ A command-line tool to control Elgato 4K X and 4K S capture cards on Linux. Supp
 - ✅ **HDR Tone Mapping** - Enable/disable HDR to SDR tone mapping
 - ✅ **HDMI Color Range** - Fix color range mismatches (Auto/Expand/Shrink)
 - ✅ **EDID Source Control** - Select EDID mode (Display/Merged/Internal)
-- ✅ **Custom EDID** - Enable/disable custom EDID preset (4K X only)
+- ✅ **Custom EDID Upload** - Write and verify a custom EDID table (4K X only)
+- ✅ **Live HDMI Input Timing** - Read resolution, refresh rate and signal state without detaching capture (4K X only; driver patch may be required)
 - ✅ **USB Speed Switching** - Switch between 5Gbps and 10Gbps modes (4K X only)
 - ✅ **Audio Input Selection** - Switch between HDMI embedded and analog audio (4K S only)
 - ✅ **Video Scaler** - Enable/disable video scaling (4K S only)
@@ -87,6 +88,19 @@ Then run `sudo update-grub` and reboot.
 
 ## Usage
 
+### Live HDMI Input Timing (4K X)
+
+```bash
+elgato4k-linux --signal
+elgato4k-linux --signal --video-device /dev/video0
+```
+
+Reads the HDMI receiver's resolution, refresh rate and lock state while video
+capture remains active. This uses the bound V4L2 driver, not a libusb detach.
+On kernels that cache XU control sizes, the small Elgato-specific driver patch
+is required. See [live timing and driver setup](docs/HDMI_SIGNAL.md).
+Other control options, including `--status`, still interrupt capture.
+
 ### Basic Commands
 
 ```bash
@@ -99,8 +113,11 @@ sudo elgato4k-linux --hdmi-range expand
 # Set EDID source to passthrough display
 sudo elgato4k-linux --edid-source display
 
-# Enable custom EDID preset (4K X only)
-sudo elgato4k-linux --custom-edid on
+# Read all seven custom EDID flash slots (4K X only)
+sudo elgato4k-linux --dump-edid-table edid-table.bin
+
+# Upload a custom EDID into flash slot 0
+sudo elgato4k-linux --upload-edid custom.bin --slot 0 --confirm-edid-write
 
 # Switch USB speed to 10Gbps (4K X only)
 sudo elgato4k-linux --usb-speed 10g
@@ -133,19 +150,35 @@ Set HDMI color range (EDID range policy):
 Select EDID mode. This controls what EDID information the capture card presents to the source device:
 - `display` - **Passthrough** your monitor's EDID to the source device. Best when you want the source to match your monitor's actual capabilities (resolution, HDR support, etc.)
 - `merged` - **Combined/negotiated** EDID from all connected displays. The capture card merges capabilities to find a common set
-- `internal` - **Built-in** EDID from the capture card's firmware. Use this when the source device doesn't work well with your monitor's EDID, or when no monitor is connected
+- `internal` - EDID from the capture card's internal flash table. Use this when the source device doesn't work well with your monitor's EDID, or when no monitor is connected
+
+#### `--hdmi-hpd <on|off>` (4K X only)
+Control the HDMI receiver hot-plug signal. Pulse it off and back on to request
+that the source reread the card's active EDID. After a successful EDID upload,
+a USB power cycle may be needed to refresh the card's active EDID buffer;
+an HPD pulse alone does not refresh that buffer.
 
 #### `--hdr-map <VALUE>`
 Control HDR tone mapping:
 - `on` - Enable HDR to SDR tone mapping
 - `off` - Disable tone mapping (passthrough)
 
-#### `--custom-edid <VALUE>` (4K X only)
-Enable/disable a custom EDID preset:
-- `on` - Enable custom EDID (selects preset index 1)
-- `off` - Disable custom EDID
+#### `--dump-edid-table <PATH>` (4K X only)
+Read the complete `0xE00`-byte custom EDID flash table containing seven
+`0x200`-byte slots and write it to a file. This does not write flash, but
+temporarily detaches the video driver and interrupts capture.
 
-> **Note:** This toggles a pre-configured EDID preset stored on the device. Uploading custom EDID files is not yet supported in this tool. The preset must first be configured using the official Elgato software on Windows/macOS.
+#### `--upload-edid <PATH> --slot <0-6> --confirm-edid-write` (4K X only)
+Upload a valid EDID into one custom EDID flash slot. The tool reads the current
+complete table first, replaces only the supplied bytes in the selected slot,
+performs the Realtek `EDID_Flash` update sequence, waits for the device to
+re-enumerate, then reads the table back and verifies the complete table.
+
+> **Warning:** This writes capture-card flash and interrupts active capture.
+> `--confirm-edid-write` is mandatory. Keep a table backup and do not disconnect
+> USB or remove power during the update. See
+> [EDID upload and recovery](docs/EDID_UPLOAD.md) for slot selection,
+> activation and recovery options.
 
 #### `--audio-input <VALUE>` (4K S only)
 Select audio input source:
@@ -237,7 +270,7 @@ All protocols were reverse-engineered through:
 - ITE UB700E chip AT command protocol analysis
 - Manual testing and validation
 
-See [LOW_CONFIDENCE_COMMANDS.md](LOW_CONFIDENCE_COMMANDS.md) for a full list of discovered firmware commands that are not yet implemented.
+See [LOW_CONFIDENCE_COMMANDS.md](docs/LOW_CONFIDENCE_COMMANDS.md) for a full list of discovered firmware commands that are not yet implemented.
 
 ## Common Use Cases
 
@@ -273,12 +306,15 @@ Enables 10Gbps SuperSpeed+ mode for higher bandwidth capture. Requires a USB 3.2
 
 ## Known Limitations
 
-- **Custom EDID upload**: Cannot upload custom EDID files to the device yet (only toggle pre-configured presets)
+- **Custom EDID upload**: 4K X only; requires explicit write confirmation and
+  interrupts capture. See [EDID upload](docs/EDID_UPLOAD.md).
 - **Firmware updates**: Not supported (use official software)
 - **4K S USB speed**: The 4K S does not support USB speed switching
 - **4K S audio/scaler**: Audio input and video scaler commands were discovered via Ghidra and need hardware testing
 - **4K Pro/other models**: Only 4K X and 4K S are supported
-- **Signal info**: HDMI signal timing and HDR infoframe data can be read but is not yet decoded (complex binary structures)
+- **Signal info**: Live HDMI timing is implemented for 4K X; some kernels need
+  the [variable-length XU patch](docs/HDMI_SIGNAL.md). HDR infoframe decoding
+  and 4K S signal timing are not implemented.
 
 ## Troubleshooting
 
@@ -307,7 +343,10 @@ sudo elgato4k-linux --hdr-map on
 - Check device is fully initialized (wait a few seconds after plugging in)
 
 ### Video stream interruption
-The tool briefly detaches the kernel driver to send commands, which may cause a momentary interruption in video capture software. The driver is immediately reattached after commands are sent.
+Most control operations briefly detach the kernel driver, which can interrupt
+video capture. The driver is reattached after commands are sent. The separate
+`--signal` path uses the bound V4L2 driver and does not detach it; see
+[live timing and driver setup](docs/HDMI_SIGNAL.md).
 
 ### 10Gbps mode not working
 - Easiest fix: switch to 5Gbps with `sudo elgato4k-linux --usb-speed 5g` (sufficient for most use cases)
@@ -326,7 +365,6 @@ The tool briefly detaches the kernel driver to send commands, which may cause a 
 ## Contributing
 
 Contributions welcome! Areas for improvement:
-- Custom EDID file upload support
 - Support for other USB Elgato devices
 - GUI wrapper
 - Additional feature reverse engineering

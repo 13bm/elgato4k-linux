@@ -95,12 +95,16 @@ pub const UVC_GET_CUR: u8 = 0x81;
 pub const UVC_GET_LEN: u8 = 0x85;
 /// UVC interface number for Extension Unit #4.
 pub const UVC_INTERFACE: u16 = 0;
+/// UVC streaming interface paired with the control interface.
+pub const UVC_STREAMING_INTERFACE: u16 = 1;
 /// Extension Unit entity ID (XU #4, GUID 961073c7-49f7-44f2-ab42-e940405940c2).
 pub const UVC_ENTITY_ID: u16 = 4;
 /// Selector for trigger/length data.
 pub const UVC_SELECTOR_TRIGGER: u16 = 0x02;
 /// Selector for payload/value data.
 pub const UVC_SELECTOR_VALUE: u16 = 0x01;
+/// Selector used by RTK_IO's extra-I2C writer for updater payloads.
+pub const UVC_SELECTOR_EXTRA_I2C_WRITE: u16 = 0x04;
 
 // ---------------------------------------------------------------------------
 // UVC sub-command IDs (byte[4] in a1 06 family payloads)
@@ -118,6 +122,12 @@ pub const UVC_SUBCMD_HDR_READ: u8 = 0x90;
 /// From RTICE_SDK_X64: `rtk_sendATCommand(0x8e, &local_418, local_218, 8)`.
 /// Payload: `[01 00 00 00, speed_value 00 00 00]` where speed=0x00 (5G) or 0x03 (10G).
 pub const AT_CMD_SET_USB_SPEED: u32 = 0x8e;
+/// AT command ID for HDMI RX hot-plug control on the 4K X.
+pub const AT_CMD_SET_HDMI_HPD: u32 = 0x6f;
+/// Read-only HDMI RX queries exported by Windows RTICE_SDK_x64.dll.
+pub const AT_CMD_HDMI_CABLE_CONNECTED: u32 = 0x36;
+pub const AT_CMD_HDMI_RAW_TIMING: u32 = 0x37;
+pub const AT_CMD_HDMI_VIDEO_STABLE: u32 = 0x38;
 
 // ---------------------------------------------------------------------------
 // BCD validation constants (for firmware version decoding)

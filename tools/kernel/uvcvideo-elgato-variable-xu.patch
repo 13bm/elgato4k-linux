@@ -1,0 +1,28 @@
+--- a/drivers/media/usb/uvc/uvc_ctrl.c
++++ b/drivers/media/usb/uvc/uvc_ctrl.c
+@@ -2310,6 +2310,25 @@
+ 		goto done;
+ 	}
+ 
++	/*
++	 * The Elgato 4K X AT mailbox changes selector 1's GET_LEN between
++	 * commands and replies (e.g. 9-byte HDMI query, 45-byte timing reply).
++	 * The cached control size is unsuitable for these raw XU transfers.
++	 * Leave mapped controls, GET_LEN/INFO and other devices unchanged.
++	 */
++	if (le16_to_cpu(chain->dev->udev->descriptor.idVendor) == 0x0fd9 &&
++	    (le16_to_cpu(chain->dev->udev->descriptor.idProduct) == 0x009b ||
++	     le16_to_cpu(chain->dev->udev->descriptor.idProduct) == 0x009c ||
++	     le16_to_cpu(chain->dev->udev->descriptor.idProduct) == 0x009d) &&
++	    entity->id == 4 && xqry->selector == 1 &&
++	    (xqry->query == UVC_GET_CUR || xqry->query == UVC_SET_CUR)) {
++		if (!xqry->size || xqry->size > 4096) {
++			ret = -ENOBUFS;
++			goto done;
++		}
++		size = xqry->size;
++	}
++
+ 	if (size != xqry->size) {
+ 		ret = -ENOBUFS;
+ 		goto done;

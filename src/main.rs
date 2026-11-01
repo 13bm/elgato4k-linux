@@ -44,7 +44,19 @@ fn print_usage() {
     println!("    sudo elgato4k-linux [OPTIONS]\n");
     println!("OPTIONS:");
     println!("    --status                    Read current device settings");
+    println!("    --signal                    Read HDMI input resolution/rate and lock (4K X)");
+    println!("                                Uses bound V4L2 driver; capture stays active");
+    println!("    --video-device <PATH>       Select video node for --signal (auto by default)");
+    println!("                                Requires variable-length XU driver support\n");
+    println!("                                Other USB control options interrupt capture\n");
     println!("    --firmware-version          Read firmware version\n");
+    println!("    --dump-edid-table <PATH>    Read all seven 4K X EDID slots to a file\n");
+    println!("    --upload-edid <PATH>         Upload an EDID (requires --slot and confirmation)");
+    println!("    --slot <0-6>                 EDID flash slot for upload");
+    println!("    --source-table <PATH>        Use a saved 0xE00 table, then enter rescue");
+    println!("    --resume-table <PATH>        Resume from a saved 0xE00 table after rescue");
+    println!("    --confirm-edid-write         Confirm the destructive EDID flash operation\n");
+    println!("    --finalize-edid-update       Exit an interrupted, completed rescue update");
     println!("    --hdmi-range <VALUE>        Set HDMI color range");
     println!("                                Values: auto, expand, shrink");
     println!("                                  auto   = match input source (recommended)");
@@ -55,11 +67,9 @@ fn print_usage() {
     println!("                                  display  = passthrough monitor's EDID");
     println!("                                  merged   = combined EDID from all displays");
     println!("                                  internal = capture card's built-in EDID\n");
+    println!("    --hdmi-hpd <on|off>         Set HDMI receiver hot-plug state\n");
     println!("    --hdr-map <VALUE>           Set HDR tone mapping");
     println!("                                Values: on, off\n");
-    println!("    --custom-edid <VALUE>       Set custom EDID preset (4K X only)");
-    println!("                                Values: on, off");
-    println!("                                Note: selects preset index, not file upload\n");
     println!("    --audio-input <VALUE>        Set audio input source (4K S only)");
     println!("                                Values: embedded, analog");
     println!("                                (embedded = HDMI audio, analog = line-in)\n");
@@ -76,7 +86,6 @@ fn print_usage() {
     println!("    sudo elgato4k-linux --hdr-map on");
     println!("    sudo elgato4k-linux --hdmi-range expand --hdr-map on");
     println!("    sudo elgato4k-linux --edid-source display --hdmi-range auto");
-    println!("    sudo elgato4k-linux --custom-edid on");
     println!("    sudo elgato4k-linux --audio-input analog  # 4K S only");
     println!("    sudo elgato4k-linux --video-scaler on     # 4K S only");
     println!("    sudo elgato4k-linux --usb-speed 10g");
@@ -147,6 +156,120 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         return Ok(());
     }
 
+    // Handle live timing before opening libusb, which detaches uvcvideo.
+    if args.iter().any(|arg| arg == "--signal") {
+        let mut video_device = None;
+        let mut index = 1;
+        while index < args.len() {
+            match args[index].as_str() {
+                "--signal" => index += 1,
+                "--video-device" if video_device.is_none() => {
+                    let path = args
+                        .get(index + 1)
+                        .filter(|path| !path.starts_with('-'))
+                        .ok_or_else(|| CliError::MissingArgumentValue("--video-device".into()))?;
+                    video_device = Some(std::path::PathBuf::from(path));
+                    index += 2;
+                }
+                _ => {
+                    return Err(
+                        "--signal accepts only --video-device; run other controls separately"
+                            .into(),
+                    );
+                }
+            }
+        }
+        let path = match video_device {
+            Some(path) => path,
+            None => find_hdmi_video_device()?,
+        };
+        println!("HDMI input: {}", read_hdmi_signal_v4l2(path)?);
+        return Ok(());
+    }
+    if args.iter().any(|arg| arg == "--video-device") {
+        return Err("--video-device requires --signal".into());
+    }
+
+    if args.iter().any(|arg| arg == "--finalize-edid-update") {
+        if args[1..].iter().any(|arg| {
+            !matches!(arg.as_str(), "--finalize-edid-update" | "--confirm-edid-write")
+        }) {
+            return Err("--finalize-edid-update accepts only --confirm-edid-write".into());
+        }
+        if !args.iter().any(|arg| arg == "--confirm-edid-write") {
+            return Err("EDID finalization requires --confirm-edid-write".into());
+        }
+        ElgatoDevice::finalize_pending_edid_update()?;
+        println!("EDID rescue update finalized; normal device re-enumerated");
+        return Ok(());
+    }
+
+    if let Some(index) = args.iter().position(|arg| arg == "--upload-edid") {
+        let mut index_check = 1;
+        while index_check < args.len() {
+            match args[index_check].as_str() {
+                "--confirm-edid-write" => index_check += 1,
+                "--upload-edid" | "--slot" | "--source-table" | "--resume-table" => {
+                    args.get(index_check + 1)
+                        .filter(|value| !value.starts_with('-'))
+                        .ok_or_else(|| CliError::MissingArgumentValue(args[index_check].clone()))?;
+                    index_check += 2;
+                }
+                _ => return Err("run EDID upload separately from other controls".into()),
+            }
+        }
+        if args.iter().any(|arg| arg == "--source-table")
+            && args.iter().any(|arg| arg == "--resume-table")
+        {
+            return Err("--source-table and --resume-table cannot be combined".into());
+        }
+        let path = args
+            .get(index + 1)
+            .ok_or_else(|| CliError::MissingArgumentValue("--upload-edid".into()))?;
+        if !args.iter().any(|arg| arg == "--confirm-edid-write") {
+            return Err("EDID upload requires --confirm-edid-write".into());
+        }
+        let slot_index = args
+            .iter()
+            .position(|arg| arg == "--slot")
+            .ok_or("EDID upload requires --slot 0-6")?;
+        let slot: u8 = args
+            .get(slot_index + 1)
+            .ok_or_else(|| CliError::MissingArgumentValue("--slot".into()))?
+            .parse()
+            .map_err(|_| "EDID slot must be an integer from 0 through 6")?;
+        if slot > 6 {
+            return Err("EDID slot must be an integer from 0 through 6".into());
+        }
+        let edid = std::fs::read(path)?;
+        validate_edid(&edid)?;
+        println!("Uploading {} bytes to EDID slot {}", edid.len(), slot);
+        if let Some(source_index) = args.iter().position(|arg| arg == "--source-table") {
+            let table_path = args
+                .get(source_index + 1)
+                .ok_or_else(|| CliError::MissingArgumentValue("--source-table".into()))?;
+            let table = std::fs::read(table_path)?;
+            EdidUploadPlan::build(&table, slot, &edid)?;
+            ElgatoDevice::open()?.upload_edid_from_table(&table, slot, &edid)?;
+        } else if let Some(resume_index) = args.iter().position(|arg| arg == "--resume-table") {
+            let table_path = args
+                .get(resume_index + 1)
+                .ok_or_else(|| CliError::MissingArgumentValue("--resume-table".into()))?;
+            let table = std::fs::read(table_path)?;
+            ElgatoDevice::resume_edid_upload(&table, slot, &edid)?;
+        } else {
+            ElgatoDevice::open()?.upload_edid(slot, &edid)?;
+        }
+        println!("EDID upload and complete-table readback verification succeeded");
+        return Ok(());
+    }
+
+    for option in ["--slot", "--source-table", "--resume-table", "--confirm-edid-write"] {
+        if args.iter().any(|arg| arg == option) {
+            return Err(format!("{option} requires --upload-edid").into());
+        }
+    }
+
     let device = ElgatoDevice::open()?;
 
     // Handle flags that don't require a value
@@ -158,6 +281,16 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
 
     if args.iter().any(|a| a == "--firmware-version") {
         println!("Firmware version: {}", device.read_firmware_version()?);
+        return Ok(());
+    }
+
+    if let Some(index) = args.iter().position(|arg| arg == "--dump-edid-table") {
+        let path = args
+            .get(index + 1)
+            .ok_or_else(|| CliError::MissingArgumentValue("--dump-edid-table".into()))?;
+        let table = device.read_edid_table()?;
+        std::fs::write(path, &table)?;
+        println!("Read {} bytes to {}", table.len(), path);
         return Ok(());
     }
 
@@ -194,6 +327,19 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                 device.set_edid_source(source)?;
                 settings_applied = true;
             }
+            "--hdmi-hpd" => {
+                let enabled = match value.as_str() {
+                    "on" | "true" | "1" => true,
+                    "off" | "false" | "0" => false,
+                    _ => return Err("HDMI HPD must be on or off".into()),
+                };
+                println!(
+                    "Setting HDMI hot-plug to {}",
+                    if enabled { "On" } else { "Off" }
+                );
+                device.set_hdmi_hpd(enabled)?;
+                settings_applied = true;
+            }
             "--hdr-map" => {
                 let mode: HdrToneMapping = value.parse().map_err(|_| CliError::InvalidArgument {
                     arg: "--hdr-map",
@@ -202,16 +348,6 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                 })?;
                 println!("Setting HDR tone mapping to {}", mode);
                 device.set_hdr_mapping(mode)?;
-                settings_applied = true;
-            }
-            "--custom-edid" => {
-                let mode: CustomEdidMode = value.parse().map_err(|_| CliError::InvalidArgument {
-                    arg: "--custom-edid",
-                    value: value.clone(),
-                    valid: CustomEdidMode::VALID_VALUES,
-                })?;
-                println!("Setting custom EDID to {}", mode);
-                device.set_custom_edid(mode)?;
                 settings_applied = true;
             }
             "--audio-input" => {

@@ -2,7 +2,7 @@
 //!
 //! These tests exercise the compiled binary via `std::process::Command`.
 //! They do **not** require an Elgato device to be connected — only the
-//! help/usage paths can be tested without hardware.
+//! help/usage and early argument validation paths can be tested without hardware.
 
 use std::process::Command;
 
@@ -23,6 +23,12 @@ fn no_args_shows_usage() {
     let stdout = String::from_utf8_lossy(&out.stdout);
     assert!(stdout.contains("USAGE:"), "expected usage text");
     assert!(stdout.contains("--status"), "expected --status in help");
+    assert!(
+        stdout.contains("--signal"),
+        "expected HDMI signal option in help"
+    );
+    assert!(stdout.contains("capture stays active"));
+    assert!(stdout.contains("--video-device"));
 }
 
 #[test]
@@ -68,4 +74,94 @@ fn missing_value_exits_nonzero() {
     // missing-argument, depending on arg order vs device open).
     let out = run(&["--hdr-map"]);
     assert!(!out.status.success());
+}
+
+#[test]
+fn live_signal_does_not_fall_back_to_usb() {
+    let out = run(&[
+        "--signal",
+        "--video-device",
+        "/definitely/not/a/video-device",
+    ]);
+    assert!(!out.status.success());
+    assert!(String::from_utf8_lossy(&out.stderr).contains("open video device"));
+}
+
+#[test]
+fn live_signal_rejects_other_actions_before_device_open() {
+    for args in [
+        vec!["--signal", "--hdr-map", "on"],
+        vec!["--signal", "--status"],
+        vec!["--signal", "--video-device", "--hdr-map"],
+        vec!["--video-device", "/dev/video0"],
+    ] {
+        let out = run(&args);
+        assert!(!out.status.success());
+        let error = String::from_utf8_lossy(&out.stderr);
+        assert!(!error.contains("not found. Make sure"));
+    }
+}
+
+#[test]
+fn live_signal_rejects_edid_recovery_before_updater_access() {
+    for args in [
+        vec!["--signal", "--finalize-edid-update"],
+        vec!["--signal", "--finalize-edid-update", "--confirm-edid-write"],
+        vec![
+            "--signal",
+            "--upload-edid",
+            "custom.bin",
+            "--confirm-edid-write",
+        ],
+    ] {
+        let out = run(&args);
+        assert!(!out.status.success());
+        assert!(
+            String::from_utf8_lossy(&out.stderr).contains("--signal accepts only --video-device")
+        );
+    }
+}
+
+#[test]
+fn edid_upload_requires_confirmation_before_usb_access() {
+    let out = run(&["--upload-edid", "custom.bin", "--slot", "0"]);
+    assert!(!out.status.success());
+    assert!(String::from_utf8_lossy(&out.stderr).contains("requires --confirm-edid-write"));
+}
+
+#[test]
+fn edid_actions_reject_conflicting_options_before_usb_access() {
+    for args in [
+        vec!["--upload-edid", "custom.bin", "--status"],
+        vec!["--upload-edid", "--slot", "0"],
+        vec![
+            "--upload-edid",
+            "custom.bin",
+            "--source-table",
+            "a.bin",
+            "--resume-table",
+            "b.bin",
+        ],
+        vec![
+            "--finalize-edid-update",
+            "--confirm-edid-write",
+            "--hdr-map",
+            "on",
+        ],
+        vec!["--resume-table", "table.bin"],
+    ] {
+        let out = run(&args);
+        assert!(!out.status.success());
+        let error = String::from_utf8_lossy(&out.stderr);
+        assert!(!error.contains("not found. Make sure"));
+        assert!(!error.contains("did not appear before timeout"));
+    }
+}
+
+#[test]
+fn edid_resume_validates_table_without_a_normal_usb_handle() {
+    let error = elgato4k_linux::ElgatoDevice::resume_edid_upload(&[], 0, &[])
+        .unwrap_err()
+        .to_string();
+    assert!(error.contains("Invalid EDID data"));
 }

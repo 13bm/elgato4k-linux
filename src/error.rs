@@ -30,6 +30,10 @@ pub enum ElgatoError {
     #[error("UVC transfer failed: {0}")]
     UvcTransfer(String),
 
+    /// The supplied EDID or flash table is invalid.
+    #[error("Invalid EDID data: {0}")]
+    InvalidEdid(String),
+
     /// The requested feature is not supported on this device model.
     #[error("{feature} is not supported on {model}")]
     UnsupportedFeature {
